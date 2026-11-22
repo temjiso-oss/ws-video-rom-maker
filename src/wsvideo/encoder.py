@@ -522,11 +522,28 @@ UNIT_C2, UNIT_C4 = 1.45, 2.6     # 2色・4色タイルの展開 (tests/measure_
 # 1コマに使える重みの合計 (K = 映像1コマあたりの VBlank 数)
 MAX_UNITS = {2: 160, 3: 330, 4: 600, 5: 800}
 COPY_BYTES = 4
+# nileswan 版の CPU 時間の見積もり (1.3.2)。1.3.0 は読み込みの時間を見ておらず、激しい場面で
+# 展開と読み込みの両方が CPU の時間を取り合い、コマ落ち → (1.3.1 で展開だけ減らしたら) 読み込みが追いつかず音飛び・早回し。
+# 1バイト読む時間 ≒ 0.02 単位 (普通のタイル1枚の展開 ≒ 200 サイクル、1バイト ≒ 4 サイクルの見積もり。
+# 250KB/秒を読み続けると CPU の約4割)。実機で測った値ではない。
+NILE_READ_UNIT = 0.02
+NILE_UNIT_MARGIN = 0.90       # 一度に4セクタ読む遅れ・全体を書き直すコマ (上限の外) の分
+# 実機の展開の速さ (1.3.3)。測定用 ROM (-DBENCH、変身シーン 192 コマ) で、実機 745 VBlank / エミュレーター 655 VBlank。
+# その 192 コマの重みの合計から、実機で 1コマ (60Hz・K5) に展開できるのは約 805 単位 = MAX_UNITS から出す 1001 の 0.80 倍。
+# 読み込みは実機 220 / エミュレーター 168 VBlank (4096 セクタ) = 1バイト約 5.3 サイクル。展開 1単位 ≒ 316 サイクルなので
+# 0.017 単位/バイト。読み込み中も音の割り込みが入る分を見て NILE_READ_UNIT は 0.02 のまま。
+NILE_HW_FACTOR = 0.80
 
 def unit_budget(s):
     """1コマで展開できるタイルの重みの合計 (60Hz は1画面が長いのでその分増やす)"""
     u = MAX_UNITS.get(s.k, 160 * s.k)
-    return u * s.lines / LINES
+    u = u * s.lines / LINES
+    if s.target == 'nile':
+        # nileswan 版: 映像のデータを読む CPU 時間は delta_pass の read_cost で各タイルに足す。
+        # ここでは音声のデータを読む分と、コマの合間に一度に最大4セクタ読むことによる遅れの分を引く。
+        abytes = (s.audio_rate or 0) / s.fps
+        u = u * NILE_HW_FACTOR * NILE_UNIT_MARGIN - NILE_READ_UNIT * abytes
+    return u
 
 
 def keyframe_interval(s):
@@ -590,7 +607,8 @@ def copy_candidates(m_list, oidx_img, opal_img, G, src, valid_ps):
 
 
 def delta_pass(analyses, tau, maxt, write=False, on_frame=None, cancel=None, align=False, rate=None,
-               burst=None, kf=0, maxunits=None, use_copy=True, dither=1.0, fps_hint=15.0, use_compact=True):
+               burst=None, kf=0, maxunits=None, use_copy=True, dither=1.0, fps_hint=15.0, use_compact=True,
+               read_cost=0.0):
     """全動画の映像ストリームを作る。
     各タイルについて「そのまま」「新しく送る (32バイト / 1色なら1バイト)」「表示中のバッファから写す (2バイト)」
     のうち、誤差 + λ x バイト数 が一番小さいものを選ぶ (λ = tau / 34: 新しく送るのは誤差が tau 以上減るとき)。
@@ -689,6 +707,9 @@ def delta_pass(analyses, tau, maxt, write=False, on_frame=None, cancel=None, ali
                 err[:, 4], byt[:, 4], unt[:, 4] = ex_f[:, 1], C4_BYTES, UNIT_C4
                 if not use_compact:
                     err[:, 3:] = np.inf
+                if read_cost:
+                    # nileswan 版: そのデータを microSD から読む CPU 時間も、同じコマの時間から出す
+                    unt += read_cost * byt
                 bbud = (bucket - 1 - 2 * 64) if bucket is not None else np.inf
                 ch = choose_options(err, byt, unt, lam, bbud, maxunits)
                 if ch is None:
@@ -1002,6 +1023,19 @@ def default_workers():
     return max(1, min(16, (os.cpu_count() or 2) - 1))
 
 
+def lower_priority():
+    """変換中もパソコンのほかの操作が重くならないように、このプロセスの優先度を「通常以下」にする。
+    Windows では、あとから起動する ffmpeg や並列処理の子プロセスもこの優先度を引き継ぐ。"""
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x4000)   # BELOW_NORMAL_PRIORITY_CLASS
+    except Exception:
+        pass
+
+
 class AnalysisCache:
     """解析結果を覚えておき、設定(形式・画質・容量など)だけ変えてやり直すときに使い回す。
     映像の見た目に関わる設定 (fps・画面の合わせ方・明るさ等・ディザ) が同じなら再利用する。"""
@@ -1087,6 +1121,7 @@ def convert(items, s, out_path, progress=None, log=None, cancel=None, cache=None
         raise RuntimeError('動画が指定されていません。')
     if len(items) > 64:
         raise RuntimeError('1つのROMに入れられる動画は64本までです。')
+    lower_priority()
     maxt = unit_budget(s)
     tmpdir = cache.dir if cache else tempfile.mkdtemp(prefix='wsvideo_')
     analyses = []
@@ -1174,7 +1209,8 @@ def convert(items, s, out_path, progress=None, log=None, cancel=None, cache=None
             burst = NILE_PREBUF * BANK
             prog(0.9, 'データファイルを作成中…')
             sw, starts, fstarts, stats = delta_pass(analyses, tau, maxt, write=True, cancel=cancel, align=True,
-                                                    rate=rate, burst=burst, kf=kf, dither=s.dither, fps_hint=s.fps)
+                                                    rate=rate, burst=burst, kf=kf, dither=s.dither, fps_hint=s.fps,
+                                                    read_cost=NILE_READ_UNIT)
             wsv = os.path.join(os.path.dirname(os.path.abspath(out_path)), wsv_name(out_path))
             wsv_size = write_wsv(wsv, sw, starts, fstarts, audios, [an.n for an in analyses], s, kf)
             rom = romlib.build_nile_rom(os.path.basename(wsv), s)
@@ -1270,7 +1306,8 @@ def convert(items, s, out_path, progress=None, log=None, cancel=None, cache=None
                 pa = np.concatenate([a[:len(a) - 2048] for a in audios])
             pw = media.PreviewWriter(s.preview_path, fps_expr(s.k, s.lines), pa, s.audio_rate or 12000)
             try:
-                kw = dict(align=True, rate=rate, burst=burst, dither=s.dither, fps_hint=s.fps) if nile else {}
+                kw = dict(align=True, rate=rate, burst=burst, dither=s.dither, fps_hint=s.fps,
+                          read_cost=NILE_READ_UNIT) if nile else {}
                 kw['kf'] = kf
                 delta_pass(analyses, tau, maxt, on_frame=lambda an, f, disp: pw.write(tiles_to_frame(disp)),
                            cancel=cancel, **kw)

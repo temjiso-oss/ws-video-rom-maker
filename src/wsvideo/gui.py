@@ -28,6 +28,8 @@ def fps_choices(lines):
             note = '（なめらか）'
         elif abs(fps - 15) < 0.6:
             note = '（標準）'
+        elif 11.5 < fps < 13:
+            note = '（nileswan で安定）'
         elif k == 10:
             note = '（データ少なめ）'
         out.append((k, f'{fps:.1f} fps{note}'))
@@ -53,8 +55,8 @@ SDKBPS_CHOICES = [(250, '250 KB/秒（標準・実機で確認済み）'), (400,
 DEFAULTS = dict(target='rom', k=5, hz60=False, audio=1, rom=16, sd=250, speaker=1, quality='auto', mode='fit',
                 dither=1.0, bright=0.0, contrast=1.0, sat=1.2, norm=True, deint=False, preview=False, pal16=True)
 PRESETS = {
-    'nile60': dict(target='nile', hz60=True, k=3, sd=250),
-    'nile': dict(target='nile', hz60=False, k=4, sd=250),
+    'nile60': dict(target='nile', hz60=True, k=5, sd=250),     # 12.1fps (実機で激しい場面もフレーム落ちなし)
+    'nile': dict(target='nile', hz60=False, k=6, sd=250),      # 12.6fps (1コマの時間を 60Hz 版と同じくらいに)
     'rom': dict(target='rom', hz60=False, k=5),
 }
 PRESET_CHOICES = [('nile60', 'nileswan で再生・60Hz で映す本体（IPS 液晶化・TV スワンなど）'),

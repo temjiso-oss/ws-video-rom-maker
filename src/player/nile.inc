@@ -160,16 +160,32 @@ ensure_video:
     cmp ax,[VCI]
     ja .ok
     inc word [STALL]
+    ; 再生中に読み込みが追いつかなかったときは、音も止めて待ち、読めたら映像と音を一緒に再開する
+    ; (止めずに待つと、読めたあとに映像が遅れを取り戻そうとして早回しになり、音も飛ぶ)
+    mov bl,[STARTED]
+    or bl,bl
+    jz .l
+    call audio_stop
 .l:
     mov ax,[VL]
     cmp ax,[VCI]
-    ja .ok
+    ja .ok0
     call stream_step
     or al,al
     jnz .l
     mov al,0x51             ; 読む物がないのに足りない = データが壊れている
     mov si,msg_bad
     jmp fatal
+.ok0:
+    or bl,bl
+    jz .ok
+    cli
+    mov ax,[TICK]           ; 今表示しているコマを K 回分見せてから次へ (一時停止の再開と同じ)
+    add al,[CFGK]
+    adc ah,0
+    mov [NEXTT],ax
+    sti
+    call audio_start
 .ok:
     pop es
     popa
@@ -179,6 +195,16 @@ ensure_video:
 ; 少しだけ読み込む (最大4セクタ)。AL=1 読んだ / 0 読む物がない(満杯か終わり)
 ; ---------------------------------------------------------------------------
 stream_step:
+%ifdef STALLTEST
+    ; テスト用: 読み込みをわざと遅くして、読み込み待ちのときの動きを確かめる (64 VBlank 中 3 回だけ読む)
+    test byte [TICK],0x3C
+    jz .stt
+    cmp byte [STARTED],0
+    je .stt
+    mov al,1
+    ret
+.stt:
+%endif
     push bx
     push cx
     push dx
@@ -1106,6 +1132,56 @@ copy_rx_part:
     pop ds
     ret
 
+; ---------------------------------------------------------------------------
+; nileswan のメニューへ戻る (libnile の nile_soft_reset と同じ手順)。戻らない。
+; 音と割り込みを止め、microSD の読み出しを終え、フラッシュを起こしてから
+; カートリッジの IPL0 (FFFF:0000) へ飛ぶ。IPL0 がハードを初期化して MENU.WS を読み直す。
+; ---------------------------------------------------------------------------
+menu_return:
+    cli
+    xor al,al
+    out 0x90,al             ; 音を止める
+    out 0xB2,al             ; 割り込みを止める
+    out 0xA2,al             ; タイマーを止める
+    call tf_stop
+    call cs_high
+    ; フラッシュを起こす (IPL0 はフラッシュが起きている前提): コマンド 0xAB を1バイト送る
+    and word [SPICFG],~0x3000
+    or word [SPICFG],0x2000 ; 装置 = フラッシュ
+    push es
+    xor al,al
+    out 0xCE,al
+    mov ax,TXBANK
+    out 0xD0,ax
+    mov ax,0x1000
+    mov es,ax
+    mov byte [es:0],0xAB
+    pop es
+    xor ax,ax
+    call spi_go_tx
+    call spi_wait
+    in ax,0xE0
+    and ax,0x0800           ; 装置の選択をやめる (速さのビットだけ残す)
+    out 0xE0,ax
+    mov al,0xDD
+    out 0xE2,al             ; nileswan のレジスタのロック解除
+    xor ax,ax
+    out 0xB7,al             ; NMI を止める
+    out 0x00,ax             ; 画面を消す
+    ; ポート0xC0 を変えると今のコードが見えなくなるので、スタックに置いた小さなコードから飛ぶ:
+    ;   out 0xC0,al / out 0xE4,ax / nop / jmp far FFFF:0000   (AX = 0xFFFF)
+    dec ax
+    push ax                 ; FFFF
+    inc ax
+    push ax                 ; 0000
+    push 0xEA90
+    push 0xE4E7
+    push 0xC0E6
+    dec ax                  ; AX = 0xFFFF
+    mov bp,sp
+    push ss
+    push bp
+    retf
 ; ---- SPI の基本操作 ----------------------------------------------------------
 ; 転送が終わるまで待つ (時間切れはエラー画面)
 spi_wait:
@@ -1328,6 +1404,119 @@ halt:
     jmp .h
 
 diag_tab:    dw VL, VCI, ALD, ACI, FC, FRAMEI, AVFIX, 0
+
+%ifdef BENCH
+; ---------------------------------------------------------------------------
+; 実機の速さの測定 (-DBENCH のときだけ)。再生はせず、結果を画面に出して止まる。
+;  1) microSD の読み込み: 先読みの後、最大 4096 セクタ読むのにかかった VBlank 数
+;  2) 展開: 読み込み済みのコマを、待たずに続けて展開するのにかかった VBlank 数 (音は鳴らす)
+; ---------------------------------------------------------------------------
+bench:
+    mov ax,[NSECT]
+    mov [BS0],ax
+    mov ax,[TICK]
+    mov [BT0],ax
+.rd:
+    call stream_step
+    or al,al
+    jz .rdend
+    mov ax,[NSECT]
+    sub ax,[BS0]
+    cmp ax,4096
+    jb .rd
+.rdend:
+    mov ax,[TICK]
+    sub ax,[BT0]
+    mov [BT1],ax
+    mov ax,[NSECT]
+    sub ax,[BS0]
+    mov [BS1],ax
+    mov word [FRAMEI],0
+    call audio_start
+    mov ax,[TICK]
+    mov [BT0],ax
+    xor cx,cx
+.dec:
+    mov ax,[VCI]
+    add ax,2
+    cmp ax,[VL]
+    jae .decend
+    mov ax,[FRAMEI]
+    cmp ax,[FRAMEN]
+    jae .decend
+    push cx
+    call decode_frame
+    pop cx
+    xor byte [BUF],1
+    inc word [FRAMEI]
+    inc cx
+    jmp .dec
+.decend:
+    mov [BF2],cx
+    mov ax,[TICK]
+    sub ax,[BT0]
+    mov [BT2],ax
+    call audio_stop
+    call text_screen
+    mov si,msg_bench
+    mov di,POS(2,2)
+    call print
+    mov si,msg_bsd
+    mov di,POS(5,2)
+    call print
+    mov ax,[BS1]
+    call print_dec16
+    add di,2
+    mov ax,[BT1]
+    call print_dec16
+    mov si,msg_bdec
+    mov di,POS(7,2)
+    call print
+    mov ax,[BF2]
+    call print_dec16
+    add di,2
+    mov ax,[BT2]
+    call print_dec16
+    mov si,msg_blines
+    mov di,POS(9,2)
+    call print
+    mov ax,[LINESW]
+    call print_dec16
+    add di,2
+    mov al,[CFGK]
+    xor ah,ah
+    call print_dec16
+    jmp halt
+
+; AX を10進5桁で DI に書いて進む
+print_dec16:
+    push ax
+    push bx
+    push cx
+    push dx
+    mov bx,10
+    mov cx,5
+    add di,8
+.l:
+    xor dx,dx
+    div bx
+    add dl,'0'-32
+    xor dh,dh
+    mov [MAPA+di],dx
+    sub di,2
+    loop .l
+    add di,12
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+msg_bench:   db 'SPEED TEST DONE',0
+msg_bsd:     db 'SD  ',0
+msg_bdec:    db 'DEC ',0
+msg_blines:  db 'LK  ',0
+%endif
 
 print_hex16:
     push ax

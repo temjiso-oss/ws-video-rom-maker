@@ -104,6 +104,35 @@ def osdfont_bin():
     return bytes(out)
 
 
+# 一時停止中の案内「A:サイセイ B:メニュー」のカタカナ (7×7)
+KANA = {
+    'サ': ['.#...#.', '.#...#.', '#######', '.#...#.', '.....#.', '....#..', '..##...'],
+    'イ': ['......#', '.....#.', '....#..', '...##..', '..#.#..', '....#..', '....#..'],
+    'セ': ['.#.....', '.#.....', '.######', '.#...#.', '.#..#..', '.#.....', '..####.'],
+    'メ': ['.....#.', '.#...#.', '..#.#..', '...#...', '..#.#..', '.#.....', '#......'],
+    'ニ': ['.......', '.#####.', '.......', '.......', '.......', '#######', '.......'],
+    'ュ': ['.......', '.......', '.####..', '....#..', '....#..', '.#####.', '.......'],
+    'ー': ['.......', '.......', '.......', '#######', '.......', '.......', '.......'],
+}
+GUIDE_GLYPHS = 'AサイセイBメニュー'     # 案内の文字 (出てくる順。player.asm の guide_cells と合わせる)
+
+
+def guidefont_bin():
+    """案内の文字を出てくる順に 1 タイルずつ。文字 = 色15、背景 = 色14 (時間表示と同じ)"""
+    out = bytearray()
+    for ch in GUIDE_GLYPHS:
+        if ch in KANA:
+            rows = [r + '.' for r in KANA[ch]] + ['........']
+        else:
+            rows = [('.' + r.ljust(5, '.') + '..') for r in FONT[ch]] + ['........']
+        for r in rows[:8]:
+            px = [15 if c == '#' else 14 for c in r[:8]]
+            for i in range(0, 8, 2):
+                out.append(px[i] << 4 | px[i + 1])
+    assert len(out) == len(GUIDE_GLYPHS) * 32
+    return bytes(out)
+
+
 def build(name, defines):
     out = OUT / name
     lst = PSRC / (Path(name).stem + '.lst')
@@ -119,6 +148,7 @@ def build(name, defines):
 def main():
     (PSRC / 'font.bin').write_bytes(font_bin())
     (PSRC / 'osdfont.bin').write_bytes(osdfont_bin())
+    (PSRC / 'guidefont.bin').write_bytes(guidefont_bin())
     build('player.bin', [])
     build('player_nile.bin', ['NILE'])
 

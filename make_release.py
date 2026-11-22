@@ -47,7 +47,7 @@ def main():
     (REL / 'docs' / 'TECHNICAL.md').write_text(spec, encoding='utf-8')
     (REL / 'requirements.txt').write_text('numpy\npillow\nimageio-ffmpeg\ntkinterdnd2\npyinstaller\n', encoding='utf-8')
     (REL / '.gitignore').write_text('__pycache__/\n*.pyc\nbuild/\ndist/\nfiles/\ntools/\n*.lst\nsrc/player/font.bin\n'
-                                    'src/player/osdfont.bin\n*.wsc\n*.WSV\n*.mp4\n!screenshots/*.mp4\n', encoding='utf-8')
+                                    'src/player/osdfont.bin\nsrc/player/guidefont.bin\n*.wsc\n*.WSV\n*.mp4\n!screenshots/*.mp4\n', encoding='utf-8')
     (REL / 'tests' / 'README.md').write_text(
         '# テスト用の道具\n\n'
         '- `sim_rom.py` / `verify.py` / `seek_test.py` / `run_rom.py`: libretro の Beetle Cygne (mednafen_wswan) コアを\n'

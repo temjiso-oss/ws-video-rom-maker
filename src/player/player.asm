@@ -180,6 +180,14 @@ PEND:       resb 1      ; 1 = 受信バッファに写していない後半 (368
 PENDPS:     resb 1
 PENDBANK:   resb 1
 PENDOFF:    resw 1
+%ifdef BENCH
+BS0:        resw 1      ; 速さの測定用 (tests/bench: -DBENCH)
+BT0:        resw 1
+BS1:        resw 1
+BT1:        resw 1
+BF2:        resw 1
+BT2:        resw 1
+%endif
 %endif
 
 section .text
@@ -325,6 +333,9 @@ play_item:
     shl bx,3
     mov ax,[HDR_ITEMS+bx+4]
     mov [FRAMEN],ax
+%ifdef BENCH
+    jmp bench
+%endif
 %else
     ; どの動画も最初のフレームはバッファAに書く(変換側と同じ約束)。
     call ensure_buf_a
@@ -610,6 +621,7 @@ do_pause:
 .t:
     mov byte [OVL],2
     call osd_time
+    call osd_guide          ; 「A:サイセイ B:メニュー」
 .lp:
 %ifdef NILE
     call osd_buf            ; 読み込み状況 (一時停止中も読み込みは続く)
@@ -620,12 +632,19 @@ do_pause:
     hlt
 .chk:
     call take_keys
+%ifdef NILE
+    test al,0x08            ; 一時停止中の B : nileswan のメニューへ戻る
+    jz .nomenu
+    jmp menu_return
+.nomenu:
+%endif
     or ah,ah
     jnz .go
     test al,0x02|0x04
     jz .lp
 .go:
     push ax
+    call osd_guide_off      ; 借りたタイルを元に戻す (次のコマを展開する前に)
     mov byte [PAUSED],0
     cli
     mov ax,[TICK]
@@ -909,6 +928,126 @@ osd_buf:
     xor dh,dh
     jmp osd_time.cell
 %endif
+
+; ---- 一時停止中の操作の案内 (時間の1行上) -----------------------------------
+; 文字のタイルは空きがないので、案内を出すマスの映像のタイル (A・B 両方の同じ番号) を一時的に借りる。
+; そのマスはスクリーン2 の不透明な文字で覆うので、どちらのバッファを表示していても文字だけが見える。
+; 元のタイルは MAP2 の見えない行 (18行目以降) に退避し、再開時に戻す。
+GUIDE_ROW   equ OSD_ROW-1
+GUIDESAVE   equ MAP2+18*64          ; 退避先 (1文字 64 バイト、最大 14 文字 = 896 バイト)
+osd_guide:
+    pusha
+    push es
+    xor ax,ax
+    mov es,ax
+    mov si,guide_cells
+    mov di,MAP2+(GUIDE_ROW*32+1)*2
+    mov bx,GUIDE_ROW*28+1   ; そのマスの映像のタイル番号
+    mov bp,GUIDESAVE
+.lp:
+    xor ax,ax
+    mov al,[cs:si]
+    inc si
+    cmp al,0xFF
+    je .done
+    test al,0x80
+    jnz .glyph
+    mov dx,ax               ; ':' と空白は時間表示の文字を使う
+    call osd_time.cell
+    jmp .next
+.glyph:
+    and al,0x7F
+    push si
+    push di
+    mov si,bx
+    shl si,5
+    add si,TILEA
+    mov di,bp
+    mov cx,16
+    rep movsw               ; A のタイルを退避
+    add si,TILEB-TILEA-32
+    mov cx,16
+    rep movsw               ; B のタイルを退避
+    mov bp,di
+    mov di,bx
+    shl di,5
+    add di,TILEA
+    shl ax,5
+    add ax,guidefont
+    push ds
+    push cs
+    pop ds
+    mov si,ax
+    mov cx,16
+    rep movsw               ; A に文字を書く
+    add di,TILEB-TILEA-32
+    mov si,ax
+    mov cx,16
+    rep movsw               ; B にも同じ文字
+    pop ds
+    pop di
+    pop si
+    mov ax,bx
+    or ax,OSD_PAL<<9
+    mov [di],ax
+    add di,2
+.next:
+    inc bx
+    jmp .lp
+.done:
+    pop es
+    popa
+    ret
+
+osd_guide_off:
+    pusha
+    push es
+    xor ax,ax
+    mov es,ax
+    mov si,guide_cells
+    mov di,MAP2+(GUIDE_ROW*32+1)*2
+    mov bx,GUIDE_ROW*28+1
+    mov bp,GUIDESAVE
+.lp:
+    mov al,[cs:si]
+    inc si
+    cmp al,0xFF
+    je .done
+    test al,0x80
+    jz .blank
+    push si
+    push di
+    mov si,bp
+    mov di,bx
+    shl di,5
+    add di,TILEA
+    mov cx,16
+    rep movsw
+    add di,TILEB-TILEA-32
+    mov cx,16
+    rep movsw
+    mov bp,si
+    pop di
+    pop si
+.blank:
+    mov word [di],OSD_BLANK
+    add di,2
+    inc bx
+    jmp .lp
+.done:
+    pop es
+    popa
+    ret
+
+; 案内のマス: 0x80+n = guidefont の n 番目、10 = ':'、12 = 空白、0xFF = 終わり
+guide_cells:
+    db 12, 0x80, 10, 0x81, 0x82, 0x83, 0x84
+%ifdef NILE
+    db 12, 0x85, 10, 0x86, 0x87, 0x88, 0x89
+%endif
+    db 12, 0xFF
+guidefont:
+    incbin "guidefont.bin"
 
 osdfont:
     incbin "osdfont.bin"
