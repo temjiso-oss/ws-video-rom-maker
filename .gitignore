@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+build/
+dist/
+files/
+tools/
+*.lst
+src/player/font.bin
+src/player/osdfont.bin
+*.wsc
+*.WSV
+*.mp4
+!screenshots/*.mp4
