@@ -719,7 +719,11 @@ load_header:
     jb .l
     mov al,[HDR+5]
     mov [CFGK],al
-    mov al,[HDR+6]
+    mov al,[HDR+6]          ; 音の R (bit7 = 1 回 2 バイト・音の DMA 24kHz、bit6 = ステレオ。2026-11-26)
+    mov ah,al
+    and ah,0xC0
+    mov [AFLG],ah
+    and al,0x3F
     mov [CFGR],al
     mov al,[HDR+7]
     or al,al
@@ -945,7 +949,9 @@ tf_cmd:
 tf_stop:
     cmp byte [OPEN],0
     je .r
+    call pipe_flush
     mov byte [OPEN],0
+    mov byte [TOKF],0
     push es
     xor al,al
     out 0xCE,al
@@ -1011,7 +1017,14 @@ read_lba:
     or al,al
     jnz .err
     mov byte [OPEN],1
+    mov byte [TOKF],0
 .cont:
+%ifndef NOTRICK
+    cmp byte [DSTPS],0
+    jne .fast
+    cmp byte [TOKF],0       ; trick の読み方の途中から本体の RAM へ読むときは、読み出しをやり直す
+    jne .restart
+%endif
     mov ax,SPI_WREAD|144    ; データの始まり (0xFE) を待って、それと前半 144 バイト
     call spi_go
     call pipe_flush         ; 受信している間に、前のセクタの後半を写す
@@ -1043,6 +1056,63 @@ read_lba:
     cmp byte [PIPE],0
     jne .later
     call pipe_flush
+%ifndef NOTRICK
+    jmp .later
+    ; ---- PSRAM へ読む: nileswan の LODSW trick (ポート 0xE3 bit5) を使う ----
+    ; 受信バッファを ROM1 の窓から読むと、RAM の窓のバンクの同じ番地の PSRAM にも書かれる (実機で確認、2026-11-25)。
+    ; 受信バッファは 512 バイトごとに繰り返し見えるので、データを受信バッファの 0 番目から受ければ、
+    ; 書き先 (DSTOFF、512 の倍数) の番地から読むだけで写せる。読むのは一般 DMA (1 バイト 1 サイクル)。
+    ; 1) 始まりの印 1 バイト  2) データ 512 バイト  3) CRC 2 バイト  4) 次のセクタの始まりの印 (出しておく)
+    ; 写すのは次の読み込み (または pipe_flush) で、4) を待っている間に行う。
+.fast:
+%ifdef OLDPIPE
+    cmp byte [TOKF],0
+    jne .tok
+    mov ax,SPI_WREAD|0      ; 始まりの印を待つ
+    call spi_go
+.tok:
+    call pipe_flush         ; 印を待っている間に、前のセクタを写す
+    call spi_flip
+    call rx0
+    mov byte [TOKF],0
+    cmp al,0xFE
+    jne .err
+    mov ax,SPI_READ|511     ; データ 512 バイト (受信バッファの 0 番目から)
+    call spi_go
+    call spi_flip
+    mov ax,SPI_READ|1       ; CRC 2 バイト (読み捨て)
+    call spi_go
+    mov ax,SPI_WREAD|0      ; 次のセクタの始まりの印 (待っている間に、このセクタを写す)
+    call spi_go
+    mov byte [TOKF],1
+%else
+    ; 2026-11-26: データ 512 バイトを受ける間 (約 500 サイクル) に前のセクタを写す。
+    ; 受信バッファは 2 面あり、SPI が受けるのは見えていない側。前のセクタは見えている側に残っているので、
+    ; 印・データを見えていない側へ受けながら、見えている側を一般 DMA で写せる。
+    ; (始まりの印はデータで上書きされるので確かめない。印が来なければ spi_wait の時間切れになる)
+    ; TOKF = 1: カードは前のセクタの CRC を送る前で止まっている
+    cmp byte [TOKF],0
+    je .ftok
+    mov ax,SPI_READ|1       ; 前のセクタの CRC 2 バイト (読み捨て)
+    call spi_go
+.ftok:
+    mov ax,SPI_WREAD|0      ; 始まりの印を待つ
+    call spi_go
+    mov ax,SPI_READ|511     ; データ 512 バイト (見えていない側の 0 番目から)
+    call spi_go
+    call pipe_flush         ; 受けている間に、前のセクタ (見えている側) を写す
+    call spi_flip           ; 受け終わったら入れ替えて、このセクタを見えるようにする
+    mov byte [TOKF],1
+%endif
+    mov al,[DSTBANK]
+    mov [FPBANK],al
+    mov ax,[DSTOFF]
+    mov [FPOFF],ax
+    mov byte [FPEND],1
+    cmp byte [PIPE],0
+    jne .later
+    call pipe_flush
+%endif
 .later:
     add word [NEXTLBA],1
     adc word [NEXTLBA+2],0
@@ -1066,6 +1136,44 @@ read_lba:
 
 ; 受信バッファに残っているセクタの後半を写す (なければ何もしない)。レジスタは壊さない
 pipe_flush:
+%ifndef NOTRICK
+    cmp byte [FPEND],0
+    je .nf
+    ; trick: 受信バッファ (ROM1 = バンク 510) の FPOFF の番地から 512 バイトを一般 DMA で読む → PSRAM バンク FPBANK の FPOFF へ。
+    ; 写し先 (本体の RAM) には読んだ内容が入るだけ (SECBUF を使い、FAT の覚えを消す)。
+    ; trick の間に音のリングを足す割り込み (ROM0 の窓を読む) が入ると PSRAM を壊すので、割り込みを止める。
+    push ax
+    pushf
+    cli
+    mov byte [FPEND],0
+    mov ax,RXBANK
+    out 0xD4,ax
+    mov al,1
+    out 0xCE,al
+    mov al,[FPBANK]
+    xor ah,ah
+    out 0xD0,ax
+    mov al,0x20
+    out 0xE3,al
+    mov ax,[FPOFF]
+    out 0x40,ax
+    mov al,3                ; 0x30000 = ROM1 の窓
+    out 0x42,al
+    mov ax,SECBUF
+    out 0x44,ax
+    mov ax,512
+    out 0x46,ax
+    mov al,0x80
+    out 0x48,al
+    xor al,al
+    out 0xE3,al
+    out 0xCE,al
+    mov word [FATCACHE],0xFFFF
+    mov word [FATCACHE+2],0xFFFF
+    popf
+    pop ax
+.nf:
+%endif
     cmp byte [PEND],0
     je .r
     push ax
@@ -1457,6 +1565,62 @@ bench:
     sub ax,[BT0]
     mov [BT2],ax
     call audio_stop
+    ; 動画が何本かあるときは、1本ずつ測って結果を覚え、最後に表にする (種類ごとの重さの測定用)
+    mov bl,[ITEM]
+    xor bh,bh
+    shl bx,3
+    mov ax,[BS1]
+    mov [BRES+bx],ax
+    mov ax,[BT1]
+    mov [BRES+bx+2],ax
+    mov ax,[BF2]
+    mov [BRES+bx+4],ax
+    mov ax,[BT2]
+    mov [BRES+bx+6],ax
+    cmp byte [CFGCOUNT],1
+    jbe .one
+    inc byte [ITEM]
+    mov al,[ITEM]
+    cmp al,[CFGCOUNT]
+    jae .table
+    cmp al,8
+    jae .table
+    jmp play_item
+.table:
+    call text_screen
+    mov si,msg_bench
+    mov di,POS(1,1)
+    call print
+    xor bx,bx
+    xor dx,dx
+.trow:
+    mov ax,dx
+    add ax,3
+    shl ax,6
+    add ax,2
+    mov di,ax
+    mov ax,dx
+    inc ax
+    mov [MAPA+di],ax
+    add word [MAPA+di],'0'-32
+    add di,4
+    mov ax,[BRES+bx+4]      ; コマ数
+    call print_dec16
+    add di,2
+    mov ax,[BRES+bx+6]      ; VBlank 数
+    call print_dec16
+    add di,2
+    mov ax,[BRES+bx+2]      ; SD (4096 セクタの VBlank 数)
+    call print_dec16
+    add bx,8
+    inc dx
+    cmp dl,[CFGCOUNT]
+    jae .tend
+    cmp dx,8
+    jb .trow
+.tend:
+    jmp halt
+.one:
     call text_screen
     mov si,msg_bench
     mov di,POS(2,2)
@@ -1487,8 +1651,91 @@ bench:
     xor ah,ah
     call print_dec16
     jmp halt
+%endif
 
-; AX を10進5桁で DI に書いて進む
+%ifdef STATS
+; ---------------------------------------------------------------------------
+; 実機の試し用 (-DSTATS のときだけ)。動画を最後まで普通に再生し、終わるたびに
+; 「番号 コマ数 遅れたコマ 読み込み待ち 音ズレ補正」の表を出す。A で次の動画へ。全部終わったら止まる。
+; ---------------------------------------------------------------------------
+stats_item_end:
+    call audio_stop
+    mov bl,[ITEM]
+    xor bh,bh
+    shl bx,3
+    mov ax,[FRAMEI]
+    mov [SRES+bx],ax
+    mov ax,[LATE]
+    mov [SRES+bx+2],ax
+    mov ax,[STALL]
+    mov [SRES+bx+4],ax
+    mov ax,[AVFIX]
+    mov [SRES+bx+6],ax
+    call text_screen
+    mov si,msg_stats
+    mov di,POS(1,1)
+    call print
+    mov si,msg_shead
+    mov di,POS(2,1)
+    call print
+    xor bx,bx
+    xor dx,dx
+.row:
+    mov ax,dx
+    add ax,4
+    shl ax,6
+    add ax,2
+    mov di,ax
+    mov ax,dx
+    inc ax
+    add ax,'0'-32
+    mov [MAPA+di],ax
+    add di,4
+    mov ax,[SRES+bx]
+    call print_dec16
+    add di,2
+    mov ax,[SRES+bx+2]
+    call print_dec16
+    add di,2
+    mov ax,[SRES+bx+4]
+    call print_dec16
+    add di,2
+    mov ax,[SRES+bx+6]
+    call print_dec16
+    add bx,8
+    inc dl
+    cmp dl,[ITEM]
+    jbe .row
+    mov al,[ITEM]
+    inc al
+    cmp al,[CFGCOUNT]
+    jae .last
+    cmp al,8
+    jae .last
+    mov [ITEM],al
+    mov si,msg_snext
+    mov di,POS(14,1)
+    call print
+.wait:
+    hlt
+    call take_keys
+    test al,0x04            ; A
+    jz .wait
+    jmp play_item
+.last:
+    mov si,msg_send
+    mov di,POS(14,1)
+    call print
+    jmp halt
+
+msg_stats:   db 'TEST RESULT',0
+msg_shead:   db '# FRAME  LATE STALL AVFIX',0
+msg_snext:   db 'PRESS A: NEXT VIDEO',0
+msg_send:    db 'ALL DONE',0
+%endif
+
+%if %isdef(BENCH) || %isdef(STATS)
+; AX を10進5桁で DI に書いて進む (5桁 + 空白1)
 print_dec16:
     push ax
     push bx

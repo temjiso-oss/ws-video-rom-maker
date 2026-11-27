@@ -74,6 +74,10 @@ def video_filter(fps_expr, mode='fit', brightness=0.0, contrast=1.0, saturation=
     if deinterlace:
         f.append('yadif')
     f.append(f'fps={fps_expr}')
+    # 前処理 (2026-11-27、試し): 縮める前・後に入れる ffmpeg のフィルター (例: hqdn3d=2:1.5:3:3、deband)
+    pre = os.environ.get('WSVIDEO_PREFILTER')
+    if pre:
+        f.append(pre)
     f.append('scale=trunc(iw*sar/2)*2:ih,setsar=1')
     if mode == 'fill':
         f.append(f'scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H}')
@@ -84,6 +88,9 @@ def video_filter(fps_expr, mode='fit', brightness=0.0, contrast=1.0, saturation=
                  f'pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black')
     if brightness or contrast != 1.0 or saturation != 1.0:
         f.append(f'eq=brightness={brightness:.3f}:contrast={contrast:.3f}:saturation={saturation:.3f}')
+    post = os.environ.get('WSVIDEO_POSTFILTER')
+    if post:
+        f.append(post)
     f.append('format=rgb24')
     return ','.join(f)
 
@@ -111,8 +118,9 @@ def read_frames(path, fps_expr, start=0.0, length=None, max_frames=None, **kw):
         raise RuntimeError('ffmpeg エラー: ' + err.strip()[-500:])
 
 
-def read_audio(path, rate, start=0.0, length=None, normalize=True, volume=1.0):
-    """8bit 符号なしモノラル (中心 0x80) の numpy 配列。音声がなければ空配列。"""
+def read_audio(path, rate, start=0.0, length=None, normalize=True, volume=1.0, channels=1):
+    """8bit 符号なし (中心 0x80) の numpy 配列。音声がなければ空配列。
+    channels=2 ならステレオ (左・右・左・右… の順)。rate は 1 チャンネルあたり。"""
     pre, post = _trim_args(start, length)
     af = []
     if normalize:
@@ -120,7 +128,7 @@ def read_audio(path, rate, start=0.0, length=None, normalize=True, volume=1.0):
     if volume != 1.0:
         af.append(f'volume={volume:.3f}')
     cmd = [ffmpeg_exe(), '-hide_banner', '-loglevel', 'error', '-nostdin'] + pre + ['-i', str(path)] + post + \
-          ['-vn', '-sn', '-ac', '1', '-ar', str(rate)] + (['-af', ','.join(af)] if af else []) + \
+          ['-vn', '-sn', '-ac', str(channels), '-ar', str(rate)] + (['-af', ','.join(af)] if af else []) + \
           ['-f', 'u8', '-']
     r = subprocess.run(cmd, capture_output=True, creationflags=NO_WINDOW)
     return np.frombuffer(r.stdout, np.uint8)
@@ -129,7 +137,7 @@ def read_audio(path, rate, start=0.0, length=None, normalize=True, volume=1.0):
 class PreviewWriter:
     """変換結果のシミュレーション映像を mp4 に書き出す。write(frame) を順に呼び、最後に close()。"""
 
-    def __init__(self, path, fps_expr, audio=None, audio_rate=12000, scale=2):
+    def __init__(self, path, fps_expr, audio=None, audio_rate=12000, scale=2, channels=1):
         import tempfile
         self.tmp = None
         cmd = [ffmpeg_exe(), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
@@ -138,7 +146,7 @@ class PreviewWriter:
             self.tmp = tempfile.NamedTemporaryFile(suffix='.u8', delete=False)
             self.tmp.write(audio.tobytes())
             self.tmp.close()
-            cmd += ['-f', 'u8', '-ar', str(audio_rate), '-ac', '1', '-i', self.tmp.name]
+            cmd += ['-f', 'u8', '-ar', str(audio_rate), '-ac', str(channels), '-i', self.tmp.name]
         cmd += ['-vf', f'scale={W * scale}:{H * scale}:flags=neighbor', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
                 '-crf', '18']
         if self.tmp:

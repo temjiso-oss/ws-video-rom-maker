@@ -16,7 +16,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / 'tools' / 'nileswan-emu' / 'medem' / 'nileswan-medem.exe'
+# 環境変数 MEDEM=mod で、実機の速さに合わせて直したエミュレーター (tools/nileswan-emu/medem-mod) を使う
+EXE = ROOT / 'tools' / 'nileswan-emu' / ('medem-mod' if os.environ.get('MEDEM') == 'mod' else 'medem') / 'nileswan-medem.exe'
 u32 = ctypes.windll.user32
 WM_KEYDOWN, WM_KEYUP, WM_CLOSE = 0x100, 0x101, 0x10
 # Mednafen の WonderSwan の初期キー割り当て (X1-4 = W D S A, A = テンキー3, B = テンキー2, START = Enter)

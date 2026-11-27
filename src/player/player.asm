@@ -14,16 +14,24 @@
 ;   バッファA: タイル0-503 (0x4000-)、マップ0x1000、パレット0-7 (0xFE00-)
 ;   バッファB: タイル512-1015 (0x8000-)、マップ0x1800、パレット8-15 (0xFF00-)
 ;   隠れている側に次のフレームを書き、VBlankでポート0x07を切り替える。
-; 音声: チャンネル2のボイスモード(8bit PCM)。HBlankタイマー割り込みで
-;   R ライン毎(12000/R Hz)に1バイトをポート0x89に書く。
+; 音声: チャンネル2のボイスモード(8bit PCM)。R ライン毎(12000/R Hz)に1バイト。
+;   R=1〜3 (12k/6k/4kHz) は音の DMA (SDMA) で鳴らす: 本体の RAM のリング (RING、2KB) を
+;   くり返し読ませ、VBlank ごとに一般 DMA (GDMA) で音声データを足す (atopup)。
+;   それ以外の R と -DNOSDMA のときは、HBlank タイマー割り込みでポート0x89に書く (isr_hbl)。
 ; ストリームの読み出し:
 ;   通常版   映像 = セグメント0x2000(ポートC2)、音声 = 0x3000(ポートC3)
 ;   nileswan 映像 = セグメント0x3000(ポートD4)、音声 = 0x2000(ポートC2)
 ;            (SPI受信バッファも 0x3000 経由で読むため。音声の割り込みと干渉しない)
 ;
 ; 映像フレームの形式:
-;   u8 hdr  bit7=このバンクの残りは空き(次のバンクの先頭へ) / bit0=パレットあり
-;   [パレットあり] 8パレット x 16色 x 2バイト
+;   u8 hdr  bit7=このバンクの残りは空き(次のバンクの先頭へ) / bit0=パレットあり / bit1=16パレット
+;           bit2=全面描き直し (1.5.0〜)
+;   [パレットあり] 8パレット x 16色 x 2バイト (16パレットなら 16 x 16 x 2)
+;   [全面描き直し] (偶数の番地にそろえる 0〜1 バイト) マップ 504 語 (28 x 18、行の順) + タイル 504 x 32 バイト。
+;                  一般 DMA で写す (gdma_vseg)。下の「繰り返し」はない。
+;   コマは偶数の番地から始まる。間の詰め物は 0x40 (読み飛ばす)。
+;   count の bit7 = まとめ書き (1.4.0 の後): n = count & 0x7F 個のマップ値 (u16)、偶数にそろえる 0〜1 バイト、
+;                  n x 32 バイトのタイル (普通のタイルだけ)。タイルは一般 DMA で写す。
 ;   繰り返し(タイル番号 < 504 の間): u8 skip, u8 count, count x (u16 マップ値, 32バイトのタイル)
 ;   マップ値の bit15 が立っていれば1色タイル: 32バイトの代わりに1バイト(全バイト共通の値)
 ; ===========================================================================
@@ -60,11 +68,16 @@ AR_END      equ 128
 ARN         equ AR_END-AR0
 RXBANK      equ 510         ; SPI 受信バッファ (ROM バンク)
 TXBANK      equ 15          ; SPI 送信バッファ (RAM バンク)
-EXTTAB      equ 0x2000      ; ファイルの連続区間の表 (8バイト x 1024)
-EXTMAX      equ 1024
+EXTTAB      equ 0x2000      ; ファイルの連続区間の表 (8バイト x 192。0x2600 からは 8 ラインの帯のパレット A、0x3800 からは音のリング)
+EXTMAX      equ 192         ; (2026-11-26 深夜に 768 → 192。ふつうに写したファイルは 1〜数区間)
 SECBUF      equ 0xC000      ; FAT 用 512 バイト
 HDR         equ 0xC200      ; .WSV のヘッダー (最大 31 セクタ)
-HDRMAX      equ 29          ; 0xC200 から 29 セクタ (0xFC00 からはパレットの置き場)
+HDRMAX      equ 20          ; 0xC200 から 20 セクタ (0xEA00 から帯のパレット、0xFC00 からはパレットの置き場)
+                            ; (2026-11-26 に 29 → 20。.WSV は約 4.9GB まで)
+BANDA       equ 0xEA00      ; ラスター: バッファ A のコマの帯のパレット (9 帯 x 8 パレット x 32 バイト = 2304)
+BANDB       equ 0xF300      ; 同 バッファ B
+BAND8A      equ 0x2600      ; 8 ラインの帯 (18 帯 x 8 パレット x 32 バイト = 4608): バッファ A (0x2600-0x37FF)
+BAND8B      equ 0xEA00      ; 同 バッファ B (0xEA00-0xFBFF、16 ラインの帯の BANDA・BANDB と同じ所)
 HDR_ITEMS   equ HDR+0x10
 HDR_BITMAP  equ HDR+0x210
 PREBUF_V    equ 6           ; 再生開始前に読んでおく映像チャンク数
@@ -76,6 +89,9 @@ SPI_CART    equ 0x0800
 VSEG        equ 0x2000
 ASEG        equ 0x3000
 %endif
+RING        equ 0x3800      ; 音の DMA が読むリング (本体の RAM)
+RINGSZ      equ 2048
+AFILL       equ 1024        ; VBlank ごとに、リングの中身をこの量まで足す
 
 ; 映像バンクを AL にする
 %macro SET_VBANK 0
@@ -131,9 +147,14 @@ SMPLHI:     resw 1      ; 鳴らしたサンプル数の上位 (下位は HBLCNT
 F0:         resw 1      ; 音声を鳴らし始めたときのコマ番号
 AVFIX:      resw 1      ; 音ズレを直した回数 (診断用)
 LINESW:     resw 1      ; 1画面のライン数 (159 または 200)
-PALPEND:    resb 1      ; 1 = 次の切り替えで PALSTAGE のパレットを書く
+PALPEND:    resb 1      ; 1 = 次の切り替えで PALSTAGE のパレットを書く / 2 = 帯のパレット (ラスター) に切り替える
 AHOLD:      resb 1      ; 1 = 音声の読み込み待ち (無音)
 XLUT:       resb 32     ; 色の少ないタイルの展開に使う表 (2色: 16語 / 4色: 16バイト)
+ASDMA:      resb 1      ; 0 = 割り込みで鳴らす / それ以外 = 音の DMA のポート0x52 の値
+ARUN:       resb 1      ; 1 = 音の DMA が動いている (VBlank で足す)
+ARESET:     resb 1      ; 1 = 次の audio_start でリングを作り直す
+AWP:        resw 1      ; リングの書き込み位置
+ACOPY:      resd 1      ; リングに写した本物のサンプル数 (鳴らした数 = これ - リングの残り)
 %ifdef NILE
 SPICFG:     resw 1      ; SPI_CNT の装置・クロックのビット
 CARDBLK:    resb 1      ; 1 = ブロック単位のアドレス (SDHC/SDXC)
@@ -180,6 +201,18 @@ PEND:       resb 1      ; 1 = 受信バッファに写していない後半 (368
 PENDPS:     resb 1
 PENDBANK:   resb 1
 PENDOFF:    resw 1
+TOKF:       resb 1      ; 1 = trick の読み方の途中 (カードは前のセクタの CRC を送る前で止まっている。OLDPIPE では「次の印を待つ受信を出してある」)
+FPEND:      resb 1      ; 1 = 受信バッファにまだ PSRAM へ写していないセクタがある (trick の読み方)
+FPBANK:     resb 1
+FPOFF:      resw 1
+; ラスター (2026-11-26)。テストの道具が決まった番地を読むので、新しい変数は後ろに足す
+RASTER:     resb 1      ; 1 = 表示中のコマは帯のパレット (VBlank とラインの割り込みでパレットを書き換える)
+RK:         resb 1      ; ラスター: 次に写す帯の番号 (2〜8。-DBAND8 は組の番号 4〜17)
+NEXTBAND:   resw 1      ; 次に表示するコマの帯のパレット (BANDA / BANDB)
+DISPBAND:   resw 1      ; 表示中のコマの帯のパレット
+; 音 (2026-11-26)
+AFLG:       resb 1      ; .WSV の音の設定: bit7 = 1 回 2 バイト (音の DMA 24kHz)、bit6 = ステレオ (左右交互)
+AHV:        resb 1      ; 1 = ハイパーボイスで鳴らしている (ステレオ・ヘッドホン)
 %ifdef BENCH
 BS0:        resw 1      ; 速さの測定用 (tests/bench: -DBENCH)
 BT0:        resw 1
@@ -187,6 +220,10 @@ BS1:        resw 1
 BT1:        resw 1
 BF2:        resw 1
 BT2:        resw 1
+BRES:       resw 32     ; 動画ごとの結果 (最大 8 本 x BS1・BT1・BF2・BT2)
+%endif
+%ifdef STATS
+SRES:       resw 32     ; 実機の試し用 (-DSTATS): 動画ごとの コマ数・遅れ・読み込み待ち・音ズレ補正
 %endif
 %endif
 
@@ -248,6 +285,7 @@ start:
     xor ax,ax
     mov cx,32768
     rep stosw               ; RAM全消去(タイル・マップ・パレットも)
+    mov byte [ARESET],1
     ; 割り込みベクタ
     mov bx,IVT_BASE*4
     mov cx,8
@@ -258,6 +296,9 @@ start:
     loop .vec
     mov word [(IVT_BASE+6)*4],isr_vbl
     mov word [(IVT_BASE+7)*4],isr_hbl
+%ifdef NILE
+    mov word [(IVT_BASE+4)*4],isr_line
+%endif
     mov al,IVT_BASE
     out 0xB0,al
     ; 画面
@@ -336,6 +377,11 @@ play_item:
 %ifdef BENCH
     jmp bench
 %endif
+%ifdef STATS
+    mov word [LATE],0
+    mov word [STALL],0
+    mov word [AVFIX],0
+%endif
 %else
     ; どの動画も最初のフレームはバッファAに書く(変換側と同じ約束)。
     call ensure_buf_a
@@ -368,6 +414,9 @@ frame_loop:
     mov word [NEXTT],1
     mov word [HBLCNT],0
     mov word [SMPLHI],0
+    mov word [ACOPY],0
+    mov word [ACOPY+2],0
+    mov byte [ARESET],1
     mov ax,[FRAMEI]
     mov [F0],ax
     mov word [OVLT],OSD_SHOW    ; TICK を 0 に戻したので、時間表示を消す時刻も数え直す
@@ -441,6 +490,13 @@ av_sync:
     mov si,ax
     mov di,bx
 .div:
+%ifdef NILE
+    test byte [AFLG],0x80   ; 1 回 2 バイト (24kHz・ステレオ): 期待値も 2 倍のバイト数
+    jz .one
+    shl si,1
+    rcl di,1
+.one:
+%endif
     cli
     mov ax,si
     mov dx,di
@@ -448,10 +504,19 @@ av_sync:
     sbb dx,[SMPLHI]
     js .back                ; 音声の方が先 (映像が遅れている) → 何もしない
     jnz .fix
+%ifdef NILE
+    test byte [AFLG],0x80   ; 1 回 2 バイトの音は、同じ時間 (0.25 秒) にするため 6000 バイト
+    jz .th1
+    cmp ax,6000
+    jb .back
+    jmp .fix
+.th1:
+%endif
     cmp ax,3000
     jb .back
 .fix:
-    ; DX:AX サンプル進める
+    ; DX:AX サンプル進める (音の DMA の一般 DMA は偶数の番地しか読めないので偶数にする)
+    and ax,0xFFFE
 %ifdef NILE
     ; 進めた先のチャンクがまだ読み込まれていなければ、今回は直さない
     mov bx,[APTR]
@@ -466,6 +531,8 @@ av_sync:
 %endif
     add [HBLCNT],ax
     adc [SMPLHI],dx
+    add [ACOPY],ax          ; 音の DMA のとき: HBLCNT は VBlank ごとに ACOPY から計算し直す
+    adc [ACOPY+2],dx
     add [APTR],ax
     adc dx,0                ; DX = 進めるバンク数
     inc word [AVFIX]
@@ -515,6 +582,12 @@ ensure_buf_a:
     ret
 
 item_end:
+%ifdef NILE
+    call raster_off         ; 動画の切れ目 (結果の表・次の動画の読み込み) ではラスターを止める
+%endif
+%ifdef STATS
+    jmp stats_item_end
+%endif
     mov al,[ITEM]
     inc al
     cmp al,[CFGCOUNT]
@@ -607,7 +680,33 @@ set_speaker:
     shl al,1
     or al,[cs:cfg_out]
     out 0x91,al
+%ifdef NILE
+    cmp byte [AHV],0
+    jne hv_setup
+%endif
     ret
+
+%ifdef NILE
+; ハイパーボイス (2026-11-26): ステレオをヘッドホンで鳴らすときだけ有効にする。
+; 符号なし (0x80 が無音)。音量はシフト = VOL (0 は 1 にする。シフト 0 は 16 ビットをはみ出して割れる)
+hv_setup:
+    cmp byte [AHV],0
+    je .off
+    mov al,[VOL]
+    and al,3
+    jnz .s
+    mov al,1
+.s:
+    or al,0x80              ; 有効・符号なし・分周 0
+    out 0x6A,al
+    xor al,al               ; ステレオ (左右交互)
+    out 0x6B,al
+    ret
+.off:
+    xor al,al
+    out 0x6A,al
+    ret
+%endif
 
 ; 一時停止。時間を出しっぱなしにする。START/A で再開、Y を押したら再開してジャンプ。
 ; 戻り値 AH = 押された Y ボタン
@@ -1055,6 +1154,87 @@ osdfont:
 audio_start:
     cmp byte [CFGR],0
     je .ret
+%ifndef NOSDMA
+    ; R=1/2/3 → 音の DMA 12k/6k/4kHz (ポート0x52 = 動かす | くり返し | 頻度)
+    mov byte [ASDMA],0
+    mov al,[CFGR]
+    cmp al,3
+    ja .irq
+    mov ah,0x8B
+    sub ah,al
+%ifdef NILE
+    ; 1 回 2 バイト: 音の DMA を 1 段速く (R=1 → 24kHz)。ステレオでヘッドホン (TV スワンも) なら、ハイパーボイスへ送る
+    mov byte [AHV],0
+    test byte [AFLG],0x80
+    jz .sd1
+    inc ah
+    test byte [AFLG],0x40
+    jz .sd1
+    in al,0x91
+    test al,0x80            ; ヘッドホンがつながっている
+    jz .sd1
+    or ah,0x10              ; 音の DMA の行き先 = ハイパーボイス
+    mov byte [AHV],1
+.sd1:
+%endif
+    mov [ASDMA],ah
+    cli
+%ifdef NILE
+    mov al,[ABANK]
+    xor ah,ah
+    out 0xD2,ax
+%else
+    mov al,[ABANK]
+    SET_ABANK
+%endif
+    cmp byte [ARESET],0
+    je .resume
+    ; リングを作り直す: 音の DMA の読み出しをリングの先頭に置き、先に AFILL 分を入れる
+    mov byte [ARESET],0
+    and word [APTR],0xFFFE
+    mov word [AWP],0
+    mov ax,RING
+    out 0x4A,ax
+    xor al,al
+    out 0x4C,al
+    mov ax,RINGSZ
+    out 0x4E,ax
+    xor al,al
+    out 0x50,al
+    call atopup
+    ; 鳴らし始め (再生の最初・ジャンプ) の 128 サンプル (12kHz で約 10ms) を無音から立ち上げる。
+    ; 波形の途中からいきなり鳴らすと「プツッ」と聞こえるため (2026-11-25 実機)
+    push bx
+    push dx
+    xor bx,bx
+.fade:
+    mov al,[RING+bx]
+    sub al,0x80
+    cbw
+    imul bx                 ; DX:AX = サンプル x i
+    sar ax,7
+    add al,0x80
+    mov [RING+bx],al
+    inc bx
+    cmp bx,128
+    jb .fade
+    pop dx
+    pop bx
+%ifdef NILE
+    mov al,0x10             ; ハイパーボイス: ステレオ、左右の順を戻す (リングの先頭 = 左)
+    out 0x6B,al
+%endif
+.resume:
+%ifdef NILE
+    call hv_setup
+%endif
+    mov al,[ASDMA]
+    out 0x52,al
+    mov byte [ARUN],1
+    sti
+    ret
+.irq:
+%endif
     cli
 %ifdef NILE
     mov al,[ABANK]
@@ -1077,6 +1257,11 @@ audio_start:
 
 audio_stop:
     cli
+%ifndef NOSDMA
+    xor al,al
+    out 0x52,al             ; 音の DMA を止める (読み出し位置とリングはそのまま。再開で続きから)
+    mov [ARUN],al
+%endif
     mov al,0x40
     out 0xB2,al
     xor al,al
@@ -1086,6 +1271,126 @@ audio_stop:
     out 0xB6,al
     sti
     ret
+
+%ifndef NOSDMA
+; ---------------------------------------------------------------------------
+; 音のリングを足す (VBlank 割り込みと audio_start から、割り込み禁止で呼ぶ)。
+; 音の DMA の今の読み出し位置 rp から見て、リングの中身が AFILL になるまで、
+; 音声データ (ASEG の窓の APTR) を一般 DMA で写す。読み込み待ち (AHOLD) の間は無音を入れる。
+; 最後に「鳴らした本物のサンプル数」(HBLCNT:SMPLHI) を計算し直す (音ズレ補正 av_sync が使う)。
+; ---------------------------------------------------------------------------
+atopup:
+    pusha
+    push ds
+    push es
+    xor ax,ax
+    mov ds,ax
+    mov es,ax
+.rd:                        ; 読み出し位置 (動いている途中なので、2回読んで同じなら確か)
+    in ax,0x4A
+    mov bx,ax
+    in ax,0x4A
+    cmp ax,bx
+    jne .rd
+    sub ax,RING
+    and ax,RINGSZ-1
+    mov bp,ax               ; BP = rp
+    mov ax,[AWP]
+    sub ax,bp
+    and ax,RINGSZ-1         ; AX = リングに入っている量
+    mov cx,AFILL
+    sub cx,ax
+    jbe .count
+    and cx,0xFFFE           ; CX = 足す量 (偶数)
+.lp:
+    jcxz .count
+    mov dx,cx               ; DX = 今回写す量: リングの終わりまで
+    mov ax,RINGSZ
+    sub ax,[AWP]
+    cmp dx,ax
+    jbe .w1
+    mov dx,ax
+.w1:
+    mov di,[AWP]
+    add di,RING
+    cmp byte [AHOLD],0
+    jne .silence
+    mov ax,[APTR]           ; 64KB のチャンクの終わりまで (APTR=0 なら制限なし)
+    neg ax
+    jz .w2
+    cmp dx,ax
+    jbe .w2
+    mov dx,ax
+.w2:
+    mov ax,[APTR]           ; 一般 DMA: 写し元 = ASEG の窓 + APTR、写し先 = リング
+    out 0x40,ax
+    mov al,ASEG>>12
+    out 0x42,al
+    mov ax,di
+    out 0x44,ax
+    mov ax,dx
+    out 0x46,ax
+    mov al,0x80
+    out 0x48,al
+    add [ACOPY],dx
+    adc word [ACOPY+2],0
+    add [APTR],dx
+    jnz .next
+    call anext_chunk        ; チャンクの終わり → 次のチャンク
+    jmp .next
+.silence:
+    push cx
+    mov cx,dx
+    shr cx,1
+    mov ax,0x8080
+    rep stosw
+    pop cx
+.next:
+    mov ax,[AWP]
+    add ax,dx
+    and ax,RINGSZ-1
+    mov [AWP],ax
+    sub cx,dx
+    jmp .lp
+.count:
+    mov ax,[AWP]
+    sub ax,bp
+    and ax,RINGSZ-1
+    mov bx,[ACOPY]
+    mov dx,[ACOPY+2]
+    sub bx,ax
+    sbb dx,0
+    mov [HBLCNT],bx
+    mov [SMPLHI],dx
+    pop es
+    pop ds
+    popa
+    ret
+
+; 音声の次のチャンクへ (isr_hbl のチャンクの終わりと同じ動き)
+anext_chunk:
+%ifdef NILE
+    inc word [ACI]
+    mov al,[ABANK]
+    inc al
+    cmp al,AR_END
+    jb .ab
+    mov al,AR0
+.ab:
+    mov [ABANK],al
+    SET_ABANK
+    mov ax,[ALD]            ; 読み込み済みでなければ、読み込まれるまで無音にする
+    cmp ax,[ACI]
+    ja .r
+    mov byte [AHOLD],1
+.r:
+%else
+    inc byte [ABANK]
+    mov al,[ABANK]
+    SET_ABANK
+%endif
+    ret
+%endif
 
 ; ---- 映像1フレームの展開 ---------------------------------------------------
 decode_frame:
@@ -1111,6 +1416,8 @@ decode_frame:
     mov si,[ss:VPTR]
 .hdr:
     lodsb
+    test al,0x40            ; 詰め物 (コマを偶数の番地から始めるため) → 読み飛ばす
+    jnz .hdr
     test al,0x80
     jz .hdrok
 %ifdef NILE
@@ -1139,6 +1446,11 @@ decode_frame:
     xor si,si
     jmp .hdr
 .hdrok:
+    push ax                 ; 先頭バイト (bit2 = 全面描き直し。パレットのあとで見る)
+%ifdef NILE
+    test al,8
+    jnz .bands
+%endif
     test al,2
     jnz .pal16
     test al,1               ; 8パレット (古い形式): 書く側のバッファの半分へすぐ書く
@@ -1161,7 +1473,77 @@ decode_frame:
     dec bx
     jnz .p16
     mov byte [ss:PALPEND],1
+%ifdef NILE
+    jmp .nopal
+.bands:                     ; 帯のパレット (ラスター、2026-11-26): 72 パレットを書く側の BANDA / BANDB へ
+    mov di,BANDA
+    cmp byte [ss:BUF],0
+    je .bda
+    mov di,BANDB
+.bda:
+    mov [ss:NEXTBAND],di
+    test al,0x10
+    jnz .b144
+    mov bx,72
+.bl:
+%rep 16
+    movsw
+%endrep
+    dec bx
+    jnz .bl
+    mov byte [ss:PALPEND],2
+    jmp .nopal
+.b144:                      ; 8 ラインの帯 (bit4、2026-11-26 深夜): 詰め物 1 バイト、144 パレット (4608 バイト) を一般 DMA で
+    inc si
+    mov bx,BAND8A
+    cmp byte [ss:BUF],0
+    je .b8a
+    mov bx,BAND8B
+.b8a:
+    mov [ss:NEXTBAND],bx
+    mov cx,9
+.bg:
+    mov dx,512
+    call gdma_vseg
+    add bx,512
+    loop .bg
+    mov byte [ss:PALPEND],3
+%endif
 .nopal:
+    pop ax
+    test al,4
+    jz .delta
+    ; ---- 全面描き直し: マップ 18 行 x 28 語、タイル 504 枚 x 32 バイトが続けて並ぶ。一般 DMA で写す ----
+    test si,1               ; 一般 DMA は偶数の番地から (変換側が 1 バイト空けている)
+    jz .ev
+    inc si
+.ev:
+    mov bp,2048             ; タイルを分けて写す大きさ (分けるのは、割り込みを長く待たせないため)
+    test al,0x10
+    jz .ch
+    mov bp,512              ; 8 ラインの帯: ラインの割り込みを 2 ラインより待たせない
+.ch:
+    mov bx,[ss:MBASE]
+    mov cx,18
+.mrow:
+    mov dx,56
+    call gdma_vseg          ; マップ 1 行 (28 語) → MBASE + 行 x 64
+    add bx,64
+    loop .mrow
+    mov bx,[ss:TBASE]
+    mov cx,NTILES*32        ; タイル 16128 バイト
+.tch:
+    mov dx,bp
+    cmp cx,dx
+    jae .tc
+    mov dx,cx
+.tc:
+    call gdma_vseg
+    add bx,dx
+    sub cx,dx
+    jnz .tch
+    jmp .done
+.delta:
     xor dx,dx
 .run:
     cmp dx,NTILES
@@ -1172,6 +1554,8 @@ decode_frame:
     lodsb
     or al,al
     jz .run
+    test al,0x80
+    jnz .bulk
     mov bp,ax
     mov di,dx
     shl di,5
@@ -1225,9 +1609,59 @@ decode_frame:
     stosw
 %endrep
     jmp .next
+.bulk:
+    ; まとめ書き: n 個のマップの値、(偶数にそろえる 0〜1 バイト)、n 枚のタイル (n x 32 バイト) を一般 DMA で
+    and ax,0x7F
+    mov cx,ax               ; CX = n
+    mov bp,ax
+    push dx
+.bm:
+    mov bx,dx
+    shl bx,1
+    mov bx,[cs:maptab+bx]
+    add bx,[ss:MBASE]
+    lodsw
+    mov [es:bx],ax
+    inc dx
+    dec bp
+    jnz .bm
+    pop bx                  ; BX = 始まりのタイル番号
+    test si,1
+    jz .be
+    inc si
+.be:
+    shl bx,5
+    add bx,[ss:TBASE]
+    push dx
+    mov dx,cx
+    shl dx,5
+    call gdma_vseg
+    pop dx
+    jmp .run
 .done:
     mov [ss:VPTR],si
     pop ds
+    ret
+
+; 一般 DMA: 映像の窓 (VSEG:SI) から本体の RAM の BX へ DX バイト (偶数)。SI は DX 進む。AX を壊す
+gdma_vseg:
+    ; 2026-11-26: ポートを書く間は割り込みを止める。VBlank の割り込みの音の補充 (atopup) やラスターも
+    ; 一般 DMA を使うので、途中で入られると写し元・写し先が書き換わる (まれに 1 コマの絵が乱れる不具合だった)。
+    ; 転送そのものは CPU を止めて一度に終わるので、止めるのはポートを書く数命令だけ。
+    pushf
+    cli
+    mov ax,si
+    out 0x40,ax
+    mov al,VSEG>>12
+    out 0x42,al
+    mov ax,bx
+    out 0x44,ax
+    mov ax,dx
+    out 0x46,ax
+    mov al,0x80
+    out 0x48,al
+    popf
+    add si,dx
     ret
 
 ; ---------------------------------------------------------------------------
@@ -1236,6 +1670,44 @@ decode_frame:
 ; DS:SI = データ、ES:DI = 書くタイル (32 進む)。2ドット分の値を表 XLUT から引く (xlat)。
 ; ---------------------------------------------------------------------------
 tile_c2:
+%ifndef OLDC2
+    ; 2026-11-26: 固定の表 c2exp (1バイト = 8ドット → 4バイト、1 のドットは 0xF) を引き、
+    ; 出力 = 色0 x 0x1111 XOR (表 AND (色0 XOR 色1) x 0x1111)。タイルごとの表づくりがいらない。
+    push bx
+    push dx
+    lodsb                   ; 上位 = 色0, 下位 = 色1
+    mov ah,al
+    shr ah,4                ; AH = 色0
+    and al,0x0F             ; AL = 色1
+    xor al,ah               ; AL = 色0 XOR 色1
+    mov dl,al
+    shl al,4
+    or dl,al
+    mov dh,dl               ; DX = (色0 XOR 色1) x 0x1111
+    mov cl,ah
+    shl ah,4
+    or cl,ah
+    mov ch,cl               ; CX = 色0 x 0x1111
+    xor bh,bh
+%rep 8
+    lodsb
+    mov bl,al
+    shl bx,1
+    shl bx,1
+    mov ax,[cs:c2exp+bx]
+    and ax,dx
+    xor ax,cx
+    stosw
+    mov ax,[cs:c2exp+bx+2]
+    and ax,dx
+    xor ax,cx
+    stosw
+    xor bh,bh
+%endrep
+    pop dx
+    pop bx
+    ret
+%else
     push bx
     push dx
     lodsb                   ; 色0 色1
@@ -1319,6 +1791,19 @@ tile_c2:
     pop dx
     pop bx
     ret
+%endif
+
+%ifndef OLDC2
+; 2色のタイルの表: c2exp[b] = 8 ドット (bit7 が左端) の 1 を 0xF にした 4 バイト。
+; 1 バイト = 左のドットが上位 4 ビット (タイルの 1 行 = 4 バイトと同じ並び)。
+c2exp:
+%assign b 0
+%rep 256
+    db ((b>>7)&1)*0xF0 | ((b>>6)&1)*0x0F, ((b>>5)&1)*0xF0 | ((b>>4)&1)*0x0F
+    db ((b>>3)&1)*0xF0 | ((b>>2)&1)*0x0F, ((b>>1)&1)*0xF0 | (b&1)*0x0F
+%assign b b+1
+%endrep
+%endif
 
 tile_c4:
     push bx
@@ -1453,10 +1938,70 @@ tile_copy:
 .row:
     or bp,bp
     jnz .split
+%ifndef OLDCOPY
+.v:
+    movsw                   ; 横のずれなし: 1行 4 バイト
+    movsw
+    dec dh
+    jnz .vn
+    lea si,[bx+28*32]       ; 下のタイルの 0 行目へ
+.vn:
+    dec dl
+    jnz .v
+    jmp .done
+%else
     movsw                   ; 横のずれなし: 1行 4 バイト
     movsw
     jmp .rnext
+%endif
 .split:
+%ifndef OLDCOPY
+    ; 2026-11-26: ずれ (1〜3 バイト) ごとの専用のコードで、1 行を語の読み書き 2 回で写す (前は 1 バイトずつ LOOP)
+    cmp bp,2
+    je .s2
+    jb .s1
+.s3:
+    mov al,[si+3]
+    mov ah,[si+32]
+    stosw
+    mov ax,[si+33]
+    stosw
+    add si,4
+    dec dh
+    jnz .s3n
+    lea si,[bx+28*32]
+.s3n:
+    dec dl
+    jnz .s3
+    jmp .done
+.s2:
+    mov ax,[si+2]
+    stosw
+    mov ax,[si+32]
+    stosw
+    add si,4
+    dec dh
+    jnz .s2n
+    lea si,[bx+28*32]
+.s2n:
+    dec dl
+    jnz .s2
+    jmp .done
+.s1:
+    mov ax,[si+1]
+    stosw
+    mov al,[si+3]
+    mov ah,[si+32]
+    stosw
+    add si,4
+    dec dh
+    jnz .s1n
+    lea si,[bx+28*32]
+.s1n:
+    dec dl
+    jnz .s1
+    jmp .done
+%endif
     push si                 ; 左のタイルの [ずれ..3] + 右のタイルの [0..ずれ-1]
     add si,bp
     mov cx,4
@@ -1507,11 +2052,29 @@ isr_vbl:
     mov al,[ss:CFGK]
     xor ah,ah
     add [ss:NEXTT],ax
-    cmp byte [ss:PALPEND],0
+    mov al,[ss:PALPEND]
+    or al,al
     je .done
     mov byte [ss:PALPEND],0
+%ifdef NILE
+    cmp al,2
+    jb .p16
+    dec al                  ; PALPEND 2 → RASTER 1 (16 ラインの帯)、3 → 2 (8 ラインの帯)
+    mov [ss:RASTER],al
+    mov ax,[ss:NEXTBAND]    ; 帯のパレットのコマを表示した: ラスターを始める (下の band_vbl が毎 VBlank 書く)
+    mov [ss:DISPBAND],ax
+    jmp .done
+.p16:
+    mov byte [ss:RASTER],0
+%endif
     call pal_apply
 .done:
+%ifdef NILE
+    cmp byte [ss:RASTER],0
+    je .noras
+    call band_vbl
+.noras:
+%endif
     cmp byte [ss:OVL],1     ; 時間表示を消す時刻か
     jne .novl
     mov ax,[ss:TICK]
@@ -1521,11 +2084,128 @@ isr_vbl:
     mov al,1
     out 0x00,al
 .novl:
+%ifndef NOSDMA
+    cmp byte [ss:ARUN],0
+    je .nosd
+    call atopup             ; 音のリングを足す
+.nosd:
+%endif
     call input
     mov al,0x40
     out 0xB6,al
     pop ax
     iret
+
+%ifdef NILE
+; ---- ラスター (2026-11-26) ---------------------------------------------------
+; 画面を 16 ラインずつ 9 本の帯に分け、帯 k は自分の 8 パレットを (k&1)*8 番から使う。
+; VBlank で帯 0・1 (512 バイト) を書き、ライン 16k (帯 k の始まり) で帯 k+1 を、帯 k が使っていない方の
+; 組 ((k+1)&1)*8 へ書く (k = 1〜7)。割り込みが一般 DMA (最大 2048 バイト = 8 ライン) で遅れても、帯は 16 ラインあるので間に合う。
+; 写すのは一般 DMA (本体の RAM → パレット RAM)。メイン側の一般 DMA はポートを書く間 割り込みを止めている (gdma_vseg)。
+; ライン一致の割り込みは、そのラインを描く前に起きる (mesem で、帯の最後のラインの色が乱れた) ので、
+; RLAG ライン遅らせる。遅らせても、一般 DMA の待ち (最大 8 ライン) と写す時間 (1 ライン) を足して 16 ラインに収まる。
+RLAG        equ 2
+; ラスターを止める (メインから呼ぶ)。パレット RAM は帯 0・1 のままになる
+raster_off:
+    pushf
+    cli
+    mov byte [ss:RASTER],0
+    mov byte [ss:PALPEND],0
+    in al,0xB2
+    and al,0xEF
+    out 0xB2,al
+    popf
+    ret
+
+; 割り込みの中から呼ぶ (割り込みは止まっている)
+band_vbl:
+    mov ax,[ss:DISPBAND]
+    out 0x40,ax
+    xor al,al
+    out 0x42,al
+    mov ax,0xFE00
+    out 0x44,ax
+    mov ax,512
+    out 0x46,ax
+    mov al,0x80
+    out 0x48,al
+    mov byte [ss:RK],2
+    mov al,16+RLAG
+    cmp byte [ss:RASTER],2
+    jne .h16
+    mov al,8+RLAG           ; 8 ラインの帯
+.h16:
+    out 0x03,al             ; 帯 1 の始まり (+RLAG) で割り込み
+    mov al,0x10
+    out 0xB6,al             ; 前のラインの割り込みの残りを消す
+    in al,0xB2
+    or al,0x10
+    out 0xB2,al
+    ret
+
+; RASTER = 1: 16 ラインの帯 9 本 / 2: 8 ラインの帯 18 本 (2026-11-26 深夜。どちらも帯ごとに 8 パレット = 256 バイト)。
+; 8 ラインの帯は、帯 k+1 を写せるのが帯 k の 8 ライン (−RLAG) だけなので、メインの一般 DMA を 512 バイト (2 ライン) に分けて、
+; 割り込みの遅れを 2 ラインまでにしている (decode の全面描き直し)。遅れて次の帯の時刻を過ぎていたら、その分も続けて写す
+; (帯 k を写す先の組は帯 k-2 の物で、もう描き終わっている)。
+isr_line:
+    push ax
+    push bx
+    mov bl,[ss:RK]
+    mov bh,[ss:RASTER]
+.one:
+    mov ah,bl               ; 写し元 = DISPBAND + 帯 x 256
+    xor al,al
+    add ax,[ss:DISPBAND]
+    out 0x40,ax
+    xor al,al
+    out 0x42,al
+    mov ax,0xFE00           ; 写し先 = パレット RAM の (帯 & 1) x 256
+    test bl,1
+    jz .ev
+    mov ah,0xFF
+.ev:
+    out 0x44,ax
+    mov ax,256
+    out 0x46,ax
+    mov al,0x80
+    out 0x48,al
+    inc bl
+    mov al,bl               ; 次: 帯 (RK-1) の始まりのライン (+RLAG)
+    dec al
+    shl al,1
+    shl al,1
+    shl al,1
+    cmp bh,2
+    je .h8
+    cmp bl,9
+    jae .last
+    shl al,1                ; 16 ラインの帯
+    jmp .nx
+.h8:
+    cmp bl,18
+    jae .last
+.nx:
+    add al,RLAG
+    mov ah,al
+    in al,0x02              ; 今のライン。もう過ぎていたら続けて写す
+    cmp al,ah
+    jae .one
+    mov [ss:RK],bl
+    mov al,ah
+    out 0x03,al
+    jmp .ack
+.last:
+    mov [ss:RK],bl
+    in al,0xB2              ; 最後の帯まで写した: この画面はもう割り込まない
+    and al,0xEF
+    out 0xB2,al
+.ack:
+    mov al,0x10
+    out 0xB6,al
+    pop bx
+    pop ax
+    iret
+%endif
 
 ; 16パレットを PALSTAGE → パレットRAM (0xFE00) へ。VBlank 割り込みの中で、画面を切り替えた直後に呼ぶ。
 ; 先に VBlank を受け付け済みにして割り込みを許し、音声の割り込みを待たせない。

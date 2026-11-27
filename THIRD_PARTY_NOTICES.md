@@ -13,6 +13,18 @@ Windows 版の配布物には、次のソフトウェアが含まれています
 | tkinterdnd2 0.7 / tkdnd | ドラッグ＆ドロップ | MIT（tkinterdnd2）/ BSD 系（tkdnd） | `licenses/tkinterdnd2-LICENSE.txt` |
 | imageio-ffmpeg 0.8 | FFmpeg の入手 | BSD-2-Clause | `licenses/imageio-ffmpeg-LICENSE.txt` |
 | PyInstaller 6.22（ブートローダー） | exe 化 | GPL v2 以降 + 配布を認める例外条項 | `licenses/PyInstaller-COPYING.txt` |
+| pywebview 6.2（1.5.0〜） | 画面（Windows の WebView2 で表示） | BSD-3-Clause | `licenses/pywebview-LICENSE.txt` |
+| bottle 0.13 | pywebview が使う小さな Web サーバー | MIT | `licenses/bottle-LICENSE.txt` |
+| pythonnet 3.2 / clr_loader 0.3 | pywebview が Windows の部品を呼ぶため | MIT | `licenses/pythonnet-LICENSE.txt`・`licenses/clr_loader-LICENSE.txt` |
+| proxy_tools 0.1 | pywebview が使う | MIT | （パッケージに全文の添付なし） |
+
+GPU 版（`WSVideoRomMaker-x.x.x-GPU.zip`）には、さらに次のものが含まれています。
+
+| ソフトウェア | 用途 | ライセンス | 全文 |
+|---|---|---|---|
+| CuPy 14.2（cupy-cuda12x） | GPU での計算 | MIT | `licenses/cupy_cuda12x-LICENSE.txt` |
+| cuda-pathfinder 1.9 | CUDA の部品を探す | Apache-2.0 | `licenses/cuda_pathfinder-LICENSE.txt` |
+| NVIDIA CUDA の実行用の部品 12.9（cuBLAS・cuFFT・cuRAND・cuSOLVER・cuSPARSE・NVRTC・nvJitLink・CUDA Runtime。PyPI の nvidia-*-cu12） | GPU での計算 | NVIDIA の使用許諾（再配布を認める部品） | `licenses/NVIDIA-CUDA-License.txt` |
 
 ## FFmpeg について（GPL v3）
 

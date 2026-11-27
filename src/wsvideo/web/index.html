@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WS Video ROM Maker</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-swan" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="3"/><rect x="7" y="9" width="10" height="6" rx="1"/><circle cx="4.8" cy="12" r=".9"/><circle cx="19.2" cy="12" r=".9"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5L20 16M8 15.5L20 8"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></symbol>
+  <symbol id="i-sd" viewBox="0 0 24 24"><path d="M7 3h8l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M10 7v3M13 7v3M16 8v2"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="brand"><svg class="ic brand-ic"><use href="#i-swan"/></svg><span class="brand-name">WS Video ROM Maker</span><span class="ver" id="ver"></span></div>
+  <div class="top-right">
+    <span class="device" id="device" title="変換の計算に使う装置"><svg class="ic"><use href="#i-chip"/></svg><span id="device-name"></span></span>
+    <button class="btn ghost" id="btn-settings"><svg class="ic"><use href="#i-settings"/></svg>詳細設定</button>
+    <button class="btn ghost icon-only" id="btn-about" aria-label="このアプリについて"><svg class="ic"><use href="#i-info"/></svg></button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="card videos" id="videos">
+    <div class="card-head">
+      <div class="step"><span class="step-no">1</span>動画</div>
+      <div class="head-actions">
+        <span class="muted" id="count"></span>
+        <button class="btn ghost small" id="btn-clear">すべて消す</button>
+        <button class="btn small" id="btn-add"><svg class="ic"><use href="#i-plus"/></svg>追加</button>
+      </div>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="drop" id="drop">
+      <svg class="ic drop-ic"><use href="#i-upload"/></svg>
+      <div class="drop-title">ここに動画をドラッグ＆ドロップ</div>
+      <div class="muted">複数の動画を入れると、動画ごとに別の ROM を作ります</div>
+      <button class="btn" id="btn-add2"><svg class="ic"><use href="#i-plus"/></svg>動画を選ぶ</button>
+    </div>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <div class="card-head"><div class="step"><span class="step-no">2</span>映す本体</div><span class="pill warn" id="custom-pill" hidden>カスタム設定</span></div>
+      <div class="presets" id="presets"></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><div class="step"><span class="step-no">3</span>保存先</div></div>
+      <div class="outdir">
+        <svg class="ic muted-ic"><use href="#i-folder"/></svg>
+        <div class="outdir-path" id="outdir" title=""></div>
+        <button class="btn small" id="btn-outdir">変更</button>
+      </div>
+      <div class="seg" id="seg-combine">
+        <button data-v="0" class="on">動画ごとに別の ROM</button>
+        <button data-v="1">まとめて 1 つの ROM</button>
+      </div>
+      <label class="check"><input type="checkbox" id="chk-preview"><span>確認用のプレビュー動画（.mp4）も作る</span></label>
+      <label class="check" id="lbl-emu"><input type="checkbox" id="chk-emu"><span>エミュレーター用の microSD のイメージも作る（nileswan 版）</span></label>
+    </section>
+  </aside>
+
+  <section class="bottom" id="bottom">
+    <div class="metrics" id="metrics">
+      <div class="metric"><div class="m-label"><svg class="ic"><use href="#i-film"/></svg>再生時間</div><div class="m-value" id="m-time">—</div><div class="m-note" id="m-time-note"></div></div>
+      <div class="metric"><div class="m-label"><svg class="ic"><use href="#i-gauge"/></svg>なめらかさ</div><div class="m-value" id="m-fps">—</div><div class="m-note" id="m-fps-note"></div></div>
+      <div class="metric"><div class="m-label"><svg class="ic"><use href="#i-sd"/></svg><span id="m-data-label">データ量</span></div><div class="m-value" id="m-data">—</div><div class="m-note" id="m-data-note"></div></div>
+      <div class="metric"><div class="m-label"><svg class="ic"><use href="#i-clock"/></svg>変換の見込み</div><div class="m-value" id="m-eta">—</div><div class="m-note" id="m-eta-note"></div></div>
+    </div>
+    <div class="actionbar" id="actionbar">
+      <div class="hint" id="hint"></div>
+      <button class="btn primary big" id="btn-start"><svg class="ic"><use href="#i-play"/></svg>変換を始める</button>
+    </div>
+
+    <div class="progress-panel" id="progress" hidden>
+      <div class="stepper" id="stepper"></div>
+      <div class="prog-title"><span id="p-title">準備中…</span><span class="p-count" id="p-count"></span></div>
+      <div class="bar"><div class="bar-fill" id="p-bar"></div></div>
+      <div class="prog-meta"><span id="p-pct">0%</span><span class="muted" id="p-msg"></span><span class="grow"></span><span class="muted">経過 <b id="p-el">0 秒</b></span><span class="muted">残り <b id="p-left">—</b></span></div>
+      <div class="prog-actions">
+        <button class="btn ghost small" id="btn-log">詳しい記録</button>
+        <span class="grow"></span>
+        <button class="btn danger" id="btn-cancel"><svg class="ic"><use href="#i-stop"/></svg>中止</button>
+      </div>
+      <pre class="log" id="log" hidden></pre>
+    </div>
+
+    <div class="done-panel" id="done" hidden>
+      <div class="done-head"><svg class="ic done-ic" id="done-ic"><use href="#i-check-circle"/></svg><div><div class="done-title" id="done-title">完了しました</div><div class="muted" id="done-sub"></div></div><span class="grow"></span>
+        <button class="btn" id="btn-open">保存先を開く</button><button class="btn primary" id="btn-again">続ける</button></div>
+      <div class="howto" id="howto"></div>
+      <div class="results" id="results"></div>
+      <button class="btn ghost small" id="btn-log2">詳しい記録</button>
+      <pre class="log" id="log2" hidden></pre>
+    </div>
+  </section>
+</main>
+
+<div class="drawer-back" id="drawer-back" hidden></div>
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head"><div class="drawer-title">詳細設定</div><button class="btn ghost icon-only" id="btn-close-drawer" aria-label="閉じる"><svg class="ic"><use href="#i-x"/></svg></button></div>
+  <div class="drawer-body">
+    <div class="group">
+      <div class="g-title">出力</div>
+      <div class="row"><label>出力の形式</label><select id="s-target"><option value="nile">nileswan の microSD から再生（長さ無制限）</option><option value="rom">ROM に入れる（最大 16MB）</option></select></div>
+      <div class="row" id="row-sd"><label>microSD の読み込み速度</label><select id="s-sd"></select></div>
+      <div class="row" id="row-rom"><label>ROM サイズの上限</label><select id="s-rom"></select></div>
+    </div>
+    <div class="group">
+      <div class="g-title">映像</div>
+      <div class="row"><label>60Hz モード</label><label class="switch"><input type="checkbox" id="s-hz60"><span></span></label><div class="r-note">IPS 液晶化・TV スワンなど 60Hz で映す本体向け。純正の液晶では映らないことがあります。</div></div>
+      <div class="row"><label>フレームレート</label><select id="s-k"></select></div>
+      <div class="row" id="row-vmode"><label>描き方</label><select id="s-vmode"></select><div class="r-note">差分：変わった所だけ描き直します（データが少ない）。<br>パラパラ：毎コマ全部描き直すので、崩れ（ブロックノイズ）が出ません。データは多め（30fps で 24 分 約 1GB）。<br>＋色：コマごとに色を選び直します。＋ラスター：画面の上と下で別の色を使います（一番きれい・変換に時間がかかる）。</div></div>
+      <div class="row"><label>画質</label><select id="s-quality"></select></div>
+      <div class="row"><label>1 コマの色数</label><select id="s-pal16"></select></div>
+      <div class="row"><label>ディザ（ざらつきで色を補う）</label><select id="s-dither"></select></div>
+      <div class="row"><label>画面の合わせ方</label><select id="s-mode"></select></div>
+      <div class="row"><label>明るさ</label><input type="range" id="s-bright" min="-0.3" max="0.3" step="0.01"><span class="val" id="v-bright"></span></div>
+      <div class="row"><label>コントラスト</label><input type="range" id="s-contrast" min="0.5" max="1.8" step="0.01"><span class="val" id="v-contrast"></span></div>
+      <div class="row"><label>彩度</label><input type="range" id="s-sat" min="0" max="2" step="0.01"><span class="val" id="v-sat"></span></div>
+      <div class="row"><label>インターレース解除</label><label class="switch"><input type="checkbox" id="s-deint"><span></span></label><div class="r-note">TV 録画などの、横じまが出る動画向け。</div></div>
+    </div>
+    <div class="group">
+      <div class="g-title">音</div>
+      <div class="row"><label>音声</label><select id="s-audio"></select></div>
+      <div class="row" id="row-amode"><label>音の形式</label><select id="s-amode"></select><div class="r-note">24kHz：高い音まで出ます。<br>ステレオ：ヘッドホン・TV スワンで左右に分かれます（本体のスピーカーではモノラル）。</div></div>
+      <div class="row"><label>本体スピーカーの音量</label><select id="s-speaker"></select></div>
+      <div class="row"><label>音量を自動でそろえる</label><label class="switch"><input type="checkbox" id="s-norm"><span></span></label></div>
+    </div>
+    <button class="btn" id="btn-reset">すべて標準の設定に戻す</button>
+  </div>
+</aside>
+
+<div class="modal-back" id="modal" hidden><div class="modal" role="dialog" aria-modal="true"><div class="modal-title" id="modal-title"></div><div class="modal-body" id="modal-body"></div><div class="modal-actions" id="modal-actions"></div></div></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

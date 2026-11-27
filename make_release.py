@@ -34,6 +34,10 @@ def main():
     for p in (ROOT / 'src' / 'wsvideo').glob('*'):
         if p.suffix in ('.py', '.bin'):
             copy(p, REL / 'src' / 'wsvideo' / p.name)
+    # 1.5.0〜 の画面 (HTML・JS・CSS)。2026-11-27 まで入れ忘れていた
+    for p in (ROOT / 'src' / 'wsvideo' / 'web').glob('*'):
+        if p.suffix in ('.html', '.js', '.css', '.svg', '.png', '.ico'):
+            copy(p, REL / 'src' / 'wsvideo' / 'web' / p.name)
     for p in (ROOT / 'src' / 'player').glob('*'):
         if p.suffix in ('.asm', '.inc'):
             copy(p, REL / 'src' / 'player' / p.name)
@@ -45,7 +49,7 @@ def main():
     spec = re.sub(r'ユーザー向けの説明は `\.\./README\.md`', 'ユーザー向けの説明は `../README.md`', spec)
     (REL / 'docs').mkdir(exist_ok=True)
     (REL / 'docs' / 'TECHNICAL.md').write_text(spec, encoding='utf-8')
-    (REL / 'requirements.txt').write_text('numpy\npillow\nimageio-ffmpeg\ntkinterdnd2\npyinstaller\n', encoding='utf-8')
+    (REL / 'requirements.txt').write_text('numpy\npillow\nimageio-ffmpeg\ntkinterdnd2\npywebview\npyinstaller\n', encoding='utf-8')
     (REL / '.gitignore').write_text('__pycache__/\n*.pyc\nbuild/\ndist/\nfiles/\ntools/\n*.lst\nsrc/player/font.bin\n'
                                     'src/player/osdfont.bin\nsrc/player/guidefont.bin\n*.wsc\n*.WSV\n*.mp4\n!screenshots/*.mp4\n', encoding='utf-8')
     (REL / 'tests' / 'README.md').write_text(

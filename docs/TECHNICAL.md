@@ -17,7 +17,8 @@ ws-video-rom-maker\
 │       ├── media.py       ffmpeg で動画・音声を読む / プレビュー mp4 を書く
 │       ├── encoder.py     減色・差分・容量合わせ・ストリーム生成（中心部分）
 │       ├── rom.py         player.bin に設定表を書き込み ROM を組み立てる
-│       ├── gui.py         tkinter の画面
+│       ├── webgui.py      画面の窓口（1.5.0〜、pywebview。画面は web\ の index.html・app.css・app.js）
+│       ├── gui.py         前の画面（tkinter。exe の --classic、pywebview が使えないとき）
 │       ├── cli.py         コマンドライン版 (python -m wsvideo.cli)
 │       └── player.bin     アセンブル済みプレイヤー（build_player.py が作る）
 ├── tests\                 emu.py(libretroハーネス) run_rom.py verify.py sim_rom.py measure_budget.py
@@ -25,7 +26,8 @@ ws-video-rom-maker\
 ├── dist\                  ビルドした exe（ffmpeg.exe 同梱）
 └── files\                 配布用 zip
 ```
-依存: Python 3.12、numpy、Pillow、imageio-ffmpeg（ffmpeg 本体の入手用）、pyinstaller（exe 化のみ）。
+依存: Python 3.12、numpy、Pillow、imageio-ffmpeg（ffmpeg 本体の入手用）、pywebview（画面、1.5.0〜）、pyinstaller（exe 化のみ）。
+任意: cupy-cuda12x（NVIDIA の GPU で計算。なければ CPU。`pip install "cupy-cuda12x[ctk]"`）。
 
 ## 映像方式
 - 画面 224×144 = 28×18 = 504 タイル。カラー・4bpp・パックド（ポート 0x60 = 0xE0）。
@@ -35,10 +37,20 @@ ws-video-rom-maker\
   - 隠れている側に書き、VBlank 割り込みでポート 0x07 を切り替える。パレットも2組に分けたので書き換え中のちらつきなし。
   - コマ f はバッファ f%2（動画ごとに 0 から数える）。プレイヤーは各動画の開始時に必ず A から書く。
 - **色**: 1コマ 8パレット × (黒 + 15色)。色0は全パレット透明→背景色（パレット0の色0 = 黒）なので、黒は常に使える。
-  タイルごとに最適なパレットを選ぶ。パレットセットは場面が変わって誤差が 25% 以上悪化し、作り直すと 20% 以上良くなるときだけ更新（最短6コマ間隔、シーンチェンジなら2コマ）。
+  タイルごとに最適なパレットを選ぶ。パレットセットは場面が変わって誤差が 12% 以上悪化し、作り直すと 12% 以上良くなるときだけ更新（最短6コマ間隔、シーンチェンジなら2コマ）。
+  （1.4.0 までは 25% / 20%。1.5.0 で `PAL_GROW` 1.12・`PAL_GAIN` 0.88 に。パレットを作るときの「割り当て → 色の決め直し」も 3 → 6 回 `PAL_ROUNDS`）
   更新したコマはそのバッファの全タイルを書き換える。減色は重み付き RGB 距離 + 8×8 ベイヤーディザ（タイル内で固定模様なので時間方向にちらつかない）。
+  RGB の重みは 0.35 : 0.45 : 0.30（1.4.0 までは明るさの式 0.30 : 0.59 : 0.11 で、青を軽く見すぎて紫・青の小物が灰色になっていた）。
+  1.5.0 の見直しで、見た目の色の差（tests/quality.py の ΔE）が 8〜12% 小さくなった。ちらつきはほぼ同じ、データは約 5% 増、変換は約 2 割遅い。
+  試す用に環境変数 `WSVIDEO_WGT`・`WSVIDEO_ROUNDS`・`WSVIDEO_KMITERS`・`WSVIDEO_PALGROW`・`WSVIDEO_PALGAIN` で変えられる。
+  **ROM 版はパレットを替えにくくする**（1.6 / 0.65、`PAL_GROW_ROM`・`PAL_GAIN_ROM`）：容量が少ないので、切り替えの全体の書き直しが容量を食い、ブロックノイズだらけになるため。
+- 展開の重み（1.5.0〜）：nileswan 版は実機で種類ごとに測ったサイクル（KINDBNCH）を 223 で割った `UNITS_NILE`、ROM 版は前の値 `UNITS_ROM`。delta_pass の `weights`。
 - **差分**: 表示中のタイル（2コマ前の内容）より候補の方が誤差 tau 以上良くなるタイルだけ書き換える。
   tau は「自動」なら ROM 容量に収まる最小値を二分探索（最小 6）。固定: 最高6 / 高20 / 標準60 / 低160。
+- **全面描き直しのコマ**（1.4.0 の後、開発中・実機は確認待ち）: コマの先頭バイト bit2。パレット（あれば）のあと、
+  偶数の番地にそろえる 0〜1 バイト、マップ 504 語（28×18、行の順）、タイル 504×32 バイトを続けて置き、プレイヤーは
+  一般 DMA で写す（マップは行ごと 18 回、タイルは 2048 バイトずつ）。パレットが変わるコマ・ジャンプ先のコマは必ずこれ。
+  上限で絞ったコマも、全部送る方が得で予算（RAW_UNITS = 100 ＋ 読み込み）に入るならこれ。
 - **1コマの書き換え上限**（エミュレーター計測、12kHz 音声あり）: K=2 → 160 タイル（実測で 200 まで間に合う）、K≥3 は上限なし（504 全部で間に合う）。K=1（75fps）は不可。
   パレット更新コマは上限を無視するため、K=2 では遅れることがある（遅れたコマの後は予定時刻に追いつく）。
 
@@ -67,8 +79,20 @@ u8 hdr           bit7: このバンクの残りは空き（次バンク先頭か
 - チャンネル2のボイスモード（ポート 0x90 = 0x22）。サンプルを 0x89 に書く。0x94 = 0x05（左右100%）。
 - 0x91 = 0x09 | シフト<<1（スピーカー・ヘッドホン有効）。**シフト0（100%）は実機の内蔵スピーカーで音割れする**（実機で確認。イヤホンは問題なし）。
   初期値はシフト1（50%）。設定表 +10 = 初期シフト、+11 = 上ボタンで上げられる上限（通常1）。本体の上下ボタンはこのシフトを変える。0x9E は 3 固定。
-- HBlank タイマー（0xA4 = R、0xA2 = 0x03 自動リロード、割り込みベクタ base+7、0xB2 bit7）で R ライン毎に 1 サンプル。
-  1ライン = 256 クロック → 12000/R Hz。VBlank（159ライン = 75.47Hz）と同じクロックなので映像と音声はずれない。
+- R ライン毎に 1 サンプル。1ライン = 256 クロック → 12000/R Hz。VBlank と同じクロックなので映像と音声はずれない。
+- **R = 1〜3（12k/6k/4kHz）は音の DMA（SDMA）で鳴らす**（2026-11-25〜。mesem で確認済み・実機は確認待ち）：
+  - 本体の RAM の `RING`（0x3800、2KB）を SDMA にくり返し読ませる。0x4A = RING、長さ = 2KB、0x52 = 0x8B − R（動かす・くり返し・頻度）。
+  - VBlank ごとに `atopup` が、SDMA の読み出し位置（0x4A を2回読んで確か）から見て、中身が `AFILL`（1KB）になるまで、
+    音声データ（ASEG の窓 + APTR）を一般 DMA（GDMA）で写す。64KB の終わりで次のチャンクへ（`anext_chunk`、
+    nileswan 版は ACI・AHOLD の扱いも割り込み版と同じ）。AHOLD の間は 0x80（無音）を入れる。
+  - GDMA は偶数の番地・長さしか扱えないので、APTR は偶数にする（鳴らし始めと音ズレ補正で切り捨て。1サンプルずれるだけ）。
+  - 鳴らした本物のサンプル数（HBLCNT:SMPLHI）= リングに写した数（ACOPY）− リングの残り。音ズレ補正（av_sync）はこれを使い、
+    進めるときは ACOPY にも足す。
+  - 一時停止・読み込み待ち（audio_stop）は 0x52 = 0 で止め、再開（audio_start）は 0x52 を書き直すだけで続きから鳴る。
+    鳴らし始め・ジャンプ（STARTED = 0）では ARESET でリングを作り直し、最初の 128 サンプルを無音から立ち上げる（プツッという音を抑える）。
+  - 効果（speedtest の展開 192 コマ）：実機は割り込み 745 → SDMA 456 VBlank（−39%）、mesem は 711 → 446。
+  - nileswan 版は、これで「ファイルの連続区間の表」（EXTTAB）が 1024 → 768 個になった（0x3800 からをリングに使うため）。
+- それ以外の R と、`-DNOSDMA` でビルドしたときは、HBlank タイマー（0xA4 = R、0xA2 = 0x03 自動リロード、割り込みベクタ base+7、0xB2 bit7）の割り込み（`isr_hbl`）で鳴らす。
 - ffmpeg の dynaudnorm で音量をそろえる（オプション）。
 
 ## 16パレット（241色）モード（2026-11-08 追加、標準）
@@ -105,6 +129,11 @@ u8 hdr           bit7: このバンクの残りは空き（次バンク先頭か
 - 実機の速さの測定用（`-DBENCH`、nileswan 版のみ）: 再生の代わりに nile.inc の `bench` を動かし、①最大 4096 セクタ読む VBlank 数
   ②読み込み済みのコマを待たずに展開する（音あり）コマ数と VBlank 数 ③ライン数・K を10進で表示して止まる。
   作り方: `python -c "import build_player as b; b.build('player_nile.bin',['NILE','BENCH'])"` → `tests/remake_nile_rom.py` → **`python build_player.py` で普通の版に戻す**。
+- 実機の試し用（`-DSTATS`、nileswan 版のみ、1.5.0 の開発）: 普通に再生し、動画が終わるたびに「番号・コマ数・LATE（間に合わなかったコマ）・
+  STALL（映像の読み込み待ち）・AVFIX（音ズレの補正）」の表を出す（nile.inc の `stats_item_end`）。A で次の動画、全部終わったら止まる。
+  `tests/make_hwtest.py` が、設定を変えた何通りかの .WSV と、このプレイヤーの ROM をまとめて作る（files/hwtest-1.5）。
+- 画質の比べ方：`tests/quality.py`（1 場面）・`tests/quality_set.ps1`（変身・会話・エンディングの 3 場面）。実機に映る画面（変換の中の表示中のバッファ）と元の動画を比べ、
+  PSNR・見た目の色の差 ΔE（3×3 でぼかしてから CIELAB）・ちらつき（元が止まっている所で表示が変わった量）を出す。
 
 ## 色の少ないタイル（2026-11-10 追加、1.1.0）
 - 記録: マップ値の bit15 と bit14 が両方 1 → 次の1バイトが種類。1 = 2色: 色バイト（上位=色0, 下位=色1）+ 8バイト（1行1バイト、bit7 が左、1=色1）、計12バイト。
@@ -116,6 +145,49 @@ u8 hdr           bit7: このバンクの残りは空き（次バンク先頭か
 ## microSD の並行読み込み（2026-11-10、1.1.0）
 - 1セクタ = WREAD 145バイト（0xFE + 前半144）→ READ 370バイト（後半368 + CRC2）。後半の受信中に前半を写し、次のセクタの前半の受信中に後半を写す。
   後半は PEND に残し、次の read_lba か pipe_flush（stream_step の最後、別の LBA へ移るとき）で写す。並行するのは stream_step の中（PIPE=1）だけ。
+- （1.4.0 の後）PSRAM へ読むときは nileswan の trick（ポート 0xE3 bit5、受信バッファを読むと PSRAM にも書かれる）を使う（read_lba の .fast）。
+  **2026-11-26 から**：1 セクタ = 前のセクタの CRC（READ 2）→ 始まりの印（WREAD 1）→ データ（READ 512、見えていない側の受信バッファの 0 番目から）
+  を出し、**データを受けている間に前のセクタ（見えている側）を一般 DMA で写す**（pipe_flush）→ 入れ替え。TOKF = 1 は「前のセクタの CRC を読む前」。
+  始まりの印はデータで上書きされるので確かめない。mesem-mod で 1 セクタ 1787 → 約 1300 サイクル（SD 143 → 104）。`-DOLDPIPE` で前の順番。
+- 2 色のタイル（2026-11-26 から）：固定の表 `c2exp`（256 x 4 バイト、1 のドットを 0xF に）を引き、色0 x 0x1111 XOR (表 AND (色0^色1) x 0x1111)。`-DOLDC2` で前の方法。
+- 写し（tile_copy、2026-11-26 から）：横のずれ 1〜3 バイトごとの専用コードで 1 行を語 2 回で写す。縦だけのずれも 1 行の確かめを減らした。`-DOLDCOPY` で前の方法。
+- 一般 DMA（2026-11-26 から）：メイン側（gdma_vseg）はポートを書く間だけ割り込みを止める（VBlank の音の補充・ラスターの割り込みも一般 DMA を使うため）。
+
+## パラパラ漫画の方式・コマごとのパレット・ラスター（2026-11-26。nileswan 版だけ）
+- 切り替えは `Settings.video_mode`（'delta' / 'raw' / 'rawpal' / 'raster'）。アプリでは詳細設定の「描き方」と、プリセット「nileswan・60Hz・高画質」（30fps・'raster'）。
+  下の環境変数は試し用（立っていれば Settings より優先して効く）。
+- コマごとのパレットの作り直しは、前のコマのパレットから始める（k-means の初めの中心にも使う、2 回・k-means 4 回）。ラスターの減色は帯ごとに 8 本だけで計算する（`_quant_banded`）。
+- `WSVIDEO_ALLRAW=1`（encoder の `ALL_RAW`）：全部のコマを全面描き直し（コマの先頭 bit2）にする。差分を使わない。
+- `WSVIDEO_PALEVERY=1`・`WSVIDEO_PALEVERYGAIN=0.9`：毎コマ パレットを作り直し、誤差が 0.9 倍より小さければ替える。前のコマのパレットから `WSVIDEO_WARMROUNDS`（2）回だけ作り直す。
+- `WSVIDEO_RASTER=1`（パラパラのときだけ、nileswan 版だけ）：
+  - 画面を 16 ラインずつ 9 本の帯に分け、帯 k は自分の 8 パレットをパレット RAM の (k&1)*8 番から使う。マップのパレット番号 = 72 本の中の番号 & 15。
+  - コマの先頭 bit3 = 帯のパレット（bit0・1 も立てる、0x0F）：16 パレットの代わりに 72 パレット（帯 0〜8 の順、2304 バイト）。
+  - プレイヤー：帯のパレットを書く側の BANDA（0xEA00）／BANDB（0xF300）へ写し、表示を切り替えるときに DISPBAND にする（PALPEND = 2）。
+    VBlank（band_vbl）で帯 0・1 の 512 バイトをパレット RAM へ。ライン 16k+2（`RLAG`）の割り込み（isr_line、ベクタ IVT_BASE+4、ポート 0x03・0xB2 bit4）で帯 k+1 の 256 バイトを、帯 k が使っていない組へ。k = 1〜7。
+    動画の切れ目（item_end）で止める（raster_off）。
+  - HDRMAX は 29 → 20 セクタ（.WSV のヘッダーのビットマップ。約 4.9GB まで）。
+  - 帯の形（2026-11-26 深夜、試し）：`WSVIDEO_BAND` = '16'（標準）／'8x8'（8 ライン x 18 帯 x 8 本 = 144 本）／'8'・'slide'（比べる用、プレイヤーは未対応）。
+    encoder は「タイルの行ごとに使えるパレット」の表 `ROWPAL`（と `ALLOWED`）で持つ。72 本のままでは '16' が一番良い（HANDOFF の表）。帯の形は encoder を読み込む時に決まる（環境変数）。
+  - **8 ラインの帯（'8x8'）**：コマの先頭 0x1F（bit4 = 8 ラインの帯）、詰め物 1 バイト、144 パレット（4608 バイト、偶数の番地から）、マップ、タイル。
+    1 コマ 21,745 バイトで、16 ラインの帯（19,441）と同じく 1 バンクに 3 コマ入るので、microSD から読む量は変わらない。
+    プレイヤー：パレットを一般 DMA（512 バイト x 9）で BAND8A（0x2600、EXTTAB を 768 → 192 区間に減らして空けた）／BAND8B（0xEA00）へ。PALPEND = 3 → RASTER = 2。
+    ライン 8k+2 の割り込みで帯 k+1（256 バイト）を、使っていない方の組へ（k = 1〜16）。写せるのは 6 ラインだけなので、このコマのタイルの一般 DMA は 512 バイト（2 ライン）ずつに分ける。
+    割り込みが遅れて次の帯の時刻を過ぎていたら、その分も続けて写す（16 ラインの帯も同じ）。
+  - 時間表示の色（色 14 = 黒・15 = 白）は、パレット RAM の 7 番に入るパレット（通し番号 & 15 = 7）だけで固定する（`OSD_MASK`）。
+- 時間方向のディザ（試し）：`WSVIDEO_TDITHER`（強さ、0 = 使わない）。全面描き直しの方式のとき、1 コマおきに網目を反転する（analyse）。tests/quality.py の `de2` は 2 コマを混ぜた見え方の ΔE。
+- 試しの一式は tests/make_hwtest.py の P20・P30（'raw'）・P30X（'rawpal'）・P30R・P20R（'raster'）・S30H・S30S（音）・P30T（P30R＋時間方向のディザ）・P30W（8 ラインの帯、`$env:WSVIDEO_BAND='8x8'` で単独で作る）・P30K・Q20K（OKLab、`$env:WSVIDEO_SPACE='oklab'; $env:WSVIDEO_OKC='2'` で単独で作る）。
+- 色の近さの測り方（2026-11-27、試し。どれも PC 側だけで、.WSV の形・プレイヤーは同じ）：
+  - `WSVIDEO_SPACE` = 'oklab'（**標準、2026-11-27〜**。OKLab。L の幅 15√3、`WSVIDEO_OKC` = 色み a・b の重み、標準 2）／'rgb'（前の方式。RGB に重み SW）。encoder の `feat()`・`unfeat()`・`DDIR` を通して、減色・k-means・誤差の計算のすべてで使う。
+  - `WSVIDEO_DITHER` = 'bayer'（標準、8x8）／'blue'（64x64 のブルーノイズ、画面に固定。src/wsvideo/bluenoise64.npy）。タイルごとの網目の表は `BD_TILES`。
+  - `WSVIDEO_PREFILTER`・`WSVIDEO_POSTFILTER`：ffmpeg のフィルターを縮める前・後に足す（media.video_filter）。
+
+## 音の 24kHz・ステレオ（2026-11-26、nileswan 版だけ。Settings の audio_mode）
+- 'mono'（今まで）= 12kHz モノラル、'hi' = 24kHz モノラル、'stereo' = 12kHz ステレオ（左・右の順に交互）。'hi'・'stereo' は 1 回 2 バイトで、音の DMA を 24kHz で動かす。
+- .WSV のヘッダーの音の R（HDR+6）：bit7 = 1 回 2 バイト、bit6 = ステレオ。
+- ステレオは、再生を始めるときにヘッドホン（ポート 0x91 bit7）を見て、つながっていればハイパーボイスで左右別々に（0x52 bit4、0x6A = 0x80 | シフト、0x6B = ステレオ）、
+  つながっていなければ ch2 のボイスで 24kHz（左右交互）。ハイパーボイスの音量はシフト 1〜3。
+- 音ズレ補正（av_sync）は 2 倍のバイト数で計算し、しきい値は 6000 バイト（どちらも 0.25 秒）。
+- nileswan 版の重み（encoder の `_NC`、1 枚のサイクル、223 サイクル = 1 単位）：普通 126・1色 100・写し 224／縦 309／横 381・2色 262・4色 588・まとめ書き 54。`NILE_READ_UNIT` = 0.0123。
 
 ## 変換の高速化（2026-11-08）
 - 減色 `quant_all`: ディザを [t, b]・[p, SW・p] の4列の行列積にまとめ、誤差は選んだ色の値を拾うだけにした（結果は同一、1.8倍速）。
@@ -143,7 +215,31 @@ u8 hdr           bit7: このバンクの残りは空き（次バンク先頭か
   音声が先（映像の遅れ）の場合は何もしない（映像側の予定時刻の仕組みで追いつく）。
 - 割り込みを長く止めないよう、再生中のコピーは REP を使わず命令を並べる。
 
-## 画面（GUI）
+## 画面（1.5.0〜、HTML ＋ pywebview）
+- webgui.py の Api が窓口。画面（web\app.js）は `window.pywebview.api.*` を呼び、変換中は `poll()` を 0.3 秒ごとに呼ぶ。
+- 1 動画（一覧・小さな絵・切り出し・状態）／2 映す本体（プリセット 3 つ：nile60 = 60Hz・K3・350KB/秒、nile = 75Hz・K4・350KB/秒、rom = K5）／
+  3 保存先（フォルダー・動画ごとに別の ROM〈標準〉かまとめて 1 つ・プレビュー）／数字 4 つ（再生時間・fps・データ量・変換の見込み）／変換を始める。
+- 変換中は 4 段階（動画を読む・色と動きを調べる・データを作る・書き出す。encoder の進み具合の文字から判断）、「変換中：題名（n/N）」、経過・残り。
+- 変換の見込み = コマ数 × 速さ（GPU 0.0075・CPU 0.042 秒/コマから始め、1500 コマ以上の変換のたびに実測で更新）＋ 1 本 6 秒。ROM は 1.6 倍。
+- 設定は %APPDATA%\WSVideoRomMaker\settings.json の web_state・outdir・combine・speed。
+- プリセット「nileswan・60Hz・高画質」（nile60hq = 30fps・K2・900KB/秒・raster）は、1.6.0 で「試験的」の印を外した（TV スワンの実機で遅れ 0）。
+
+## エミュレーター用の microSD のイメージ（1.6.0〜、emuimg.py）
+- 保存先の下の「エミュレーター用の microSD のイメージも作る」（state の `emu`、nileswan 版のときだけ表示。プリセットを替えても残す）。
+- nileswan 版の変換が終わるたびに `emuimg.make_for(.wsc, .WSV)`：.wsc の横に「名前_emu」フォルダーを作り、`nileswan.img` と `はじめにお読みください.txt`（UTF-8 BOM つき）を置く。
+  作れなくても変換は成功のまま（結果に emu_error を出す）。
+- イメージ：パーティションなしの FAT32（ボリューム名 WSVIDEO）。.WSV をルートに、.wsc を `/NILESWAN/MENU.WS` に連続したクラスタで置く（IPL が MENU.WS をすぐ起動するので、メニューなしで動画が始まる）。
+  大きさ = 中身 × 1.03 ＋ 16MB（1MB 単位）、**最小 128MB**（64MB は nileswan の IPL が「File system not found」になった）、最大 4GB 未満（エミュレーターはカードを標準容量・バイト番地として扱う）。
+  クラスタは 65525 個以上になる一番大きい大きさ（64 セクタまで）。
+- 見かた：nileswan-mesem で、同じフォルダーに置いた `nileswan.ipl0`（と `nileswan.spi`）を開く。mesem は `X.ipl0` を開くと `X.spi`・`X.img` を使う。ファームウェアのファイルは同梱しない（GPL-3.0。手に入れ方は 49bitcat.com の emulator の説明へ案内）。
+- 確認：mesem-mod で 128MB・512MB のイメージから再生できた（2026-11-27）。
+
+## GPU（1.5.0〜）
+- encoder.gpu()：CuPy が使えれば、減色（quant_all）・2/4 色の近似・写しの候補・パレットの kmeans（16 組まとめて）を GPU で計算。WSVIDEO_NOGPU=1 で CPU。
+- 結果は CPU と同じ式（kmeans だけは乱数が違うので同じにはならない。品質は同じか少し良い）。
+- exe は `build_exe.py --gpu` で GPU 版（CuPy と NVIDIA の部品を同梱）。普通の版は CPU だけ。
+
+## 前の画面（gui.py、Tkinter）
 - 「② 使い方を選ぶ」= プリセット（gui.py の PRESETS）: nile60（nileswan・60Hz・K=3・250KB/秒）、nile（nileswan・75Hz・K=4・250KB/秒）、rom（ROM・K=5）、custom。
   プリセットが決めるのは 形式・fps・60Hz・読み込み速度だけ。明るさ・音声・ディザ・プレビュー等の好みは保持。
 - 詳細設定は折りたたみ。設定は %APPDATA%\WSVideoRomMaker\settings.json（state・前回の保存先フォルダ・詳細を開いていたか）。
@@ -169,7 +265,7 @@ START/A 一時停止、B 最初から（nileswan 版は一時停止中の B で�
   1. `POW_CNT(0xE2)=0x00DD` でI/Oロック解除、`BANK_MASK(0xE4)` の bit9-11 を消してバンクマスク解除。
   2. TF カードを初期化し直す（ロック解除で電源が切れるため）。libnile と同じ順: CMD0 → CMD8 → ACMD41(HCS) → CMD58、
      失敗したら ACMD41(0) → CMD1（nileswan エミュレーターは ACMD41 に 0x05 を返し CMD1 で通る）→ CMD16。初期化は 384kHz、その後 24MHz。
-  3. FAT32（MBR あり/なし）のルートから名前で探し、クラスタの連続区間表（最大1024区間、0x2000〜）を作る。
+  3. FAT32（MBR あり/なし）のルートから名前で探し、クラスタの連続区間表（0x2000〜。最大 192 区間、2026-11-26 深夜に 768 から減らした。超えると断片化のエラー）を作る。
   4. `.WSV` のヘッダー（最大31セクタ）を内蔵RAM 0xC200 に読む。
   5. 再生: 待ち時間（コマの切り替え待ち・一時停止中）に最大4セクタずつ読む。CMD18 の連続読み出しを続け、LBA が飛ぶときだけ CMD12。
      受信バッファ（ROMバンク510）を ROM1（0x3000, ポートD4）で読み、セルフフラッシュモード（ポート0xCE=1）で
@@ -212,6 +308,9 @@ START/A 一時停止、B 最初から（nileswan 版は一時停止中の B で�
 - `python tests/seek_test.py rom.wsc`: 通常版でジャンプを繰り返し、画面が順に読み戻した画面と一致するか（時間表示の場所は除く）。
   libretro の入力ID: Y1=13, Y2=11, Y3=12, Y4=10。nileswan エミュレーターでは Y = 矢印キー。
 - nileswan 版: `tools/nileswan-emu/`（公式の nileswan-medem と IPL0・SPI・512MB の FAT32 SD イメージ）。
+  `tools/nileswan-emu/medem-mod/` は、実機で測った CPU の速さ（命令の先読み・カートの 8bit の窓・割り込みなど）を入れて自分でビルドした版
+  （`tools/patch_medem.py`、`tools/build-medem.sh`、MSYS2 が必要）。`MEDEM=mod python tests/run_nile_emu.py …` で使う。速さは実機の ±3% 程度。
+  測定用 ROM：`bench/busbench.asm`（`python bench/build_busbench.py` → `files/busbench/busbench.wsc`・`busbench2〜4.wsc`）。
   1. `python tests/fat32img.py nileswan.img put X.WSV X.WSV [--fragment N]`（N クラスタごとに隙間を空けて断片化）
   2. `python tests/fat32img.py nileswan.img put player.wsc NILESWAN/MENU.WS`（プレイヤーをメニューとして起動させる）
   3. `python tests/run_nile_emu.py nileswan.ipl0 出力 3,6,10 [--keys 44:RIGHT]`（Mednafen の F9 で画面を保存。デスクトップは撮らない）

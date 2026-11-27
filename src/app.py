@@ -26,6 +26,16 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()    # exe 版で並列解析の子プロセスを動かすため
     if len(sys.argv) > 1 and sys.argv[1] == '--cli':
         run_cli(sys.argv[2:])
-    else:
+    elif len(sys.argv) > 1 and sys.argv[1] == '--classic':
+        # 前の画面 (Tkinter)
+        sys.argv.pop(1)
         from wsvideo.gui import main
+        main()
+    else:
+        # 1.5.0〜 の画面 (HTML + pywebview)。使えない PC では前の画面にする
+        try:
+            import webview  # noqa: F401
+            from wsvideo.webgui import main
+        except Exception:
+            from wsvideo.gui import main
         main()
